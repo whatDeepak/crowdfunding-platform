@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useWeb3 } from '@/lib/web3-context';
-import { ShieldCheck, Clock, ArrowRight, AlertCircle, Loader } from 'lucide-react';
+import { ShieldCheck, Clock, ArrowRight, AlertCircle, Loader, FileText } from 'lucide-react';
 
 export default function AdminPage() {
   const { isAdmin, isConnected, connectWallet, account } = useWeb3();
@@ -87,6 +87,7 @@ export default function AdminPage() {
             <Loader className="w-6 h-6 animate-spin text-muted-foreground" />
           </div>
         ) : (
+          <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <Card className="hover:shadow-md transition-shadow">
               <CardHeader>
@@ -128,6 +129,15 @@ export default function AdminPage() {
               </CardContent>
             </Card>
           </div>
+
+          <div className="mt-6 text-center">
+            <Button asChild variant="outline" className="gap-2">
+              <Link href="/admin/audit-log">
+                <FileText className="w-4 h-4" /> View Audit Log
+              </Link>
+            </Button>
+          </div>
+          </>
         )}
       </main>
       <Footer />
