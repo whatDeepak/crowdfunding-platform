@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getActiveCampaigns, searchCampaigns, createCampaign } from '@/lib/supabase';
+import { getActiveCampaigns, searchCampaigns, createCampaign, getCreatorCampaigns } from '@/lib/supabase';
 import type { DbCampaign, CampaignCategory } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
@@ -9,10 +9,16 @@ export async function GET(request: NextRequest) {
     const offset   = parseInt(searchParams.get('offset')   || '0');
     const query    = searchParams.get('q')                  || '';
     const category = searchParams.get('category') as CampaignCategory | null;
+    const creator  = searchParams.get('creator');
 
-    const campaigns = query
-      ? await searchCampaigns(query, limit)
-      : await getActiveCampaigns(limit, offset, category ?? undefined);
+    let campaigns;
+    if (creator) {
+      campaigns = await getCreatorCampaigns(creator);
+    } else if (query) {
+      campaigns = await searchCampaigns(query, limit);
+    } else {
+      campaigns = await getActiveCampaigns(limit, offset, category ?? undefined);
+    }
 
     return NextResponse.json(campaigns);
   } catch (error) {

@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Shield, CheckCircle, ExternalLink, Wallet, AlertCircle,
-  Loader, ShieldCheck, Building2, FileText,
+  Loader, ShieldCheck, Building2, FileText, Clock,
 } from 'lucide-react';
 import { useWeb3 } from '@/lib/web3-context';
 import { toast } from 'sonner';
@@ -310,6 +310,14 @@ export default function CampaignDetailPage() {
               )}
 
               {/* Tabs: Milestones / Donations / Details */}
+              <div className="flex justify-end">
+                <Button asChild variant="outline" size="sm" className="gap-2">
+                  <Link href={`/campaigns/${campaignId}/transparency`}>
+                    <Clock className="w-4 h-4" /> Transparency Timeline
+                  </Link>
+                </Button>
+              </div>
+
               <Tabs defaultValue="milestones" className="w-full">
                 <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="milestones">
