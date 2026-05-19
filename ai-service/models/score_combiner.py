@@ -1,14 +1,17 @@
 """
-Combines individual signal scores into a final trust score (0-100).
+Combines five signal scores into a final trust score (0-100).
 
-Weights:
-  text_score      (0-25) — description quality
-  semantic_score  (0-25) — uniqueness vs. existing campaigns
-  amount_score    (0-25) — statistical reasonableness
+New weights (Version 3):
+  text_score      (raw 0-25) → scaled to 0-20
+  semantic_score  (raw 0-25) → scaled to 0-15
+  amount_score    (raw 0-25) → scaled to 0-15
+  image_score     (raw 0-25) → scaled to 0-10
+  document_score  (raw 0-40) → used directly
 
-Plus image_reuse_flag: if True, deducts 25 from the total.
+Total = 20 + 15 + 15 + 10 + 40 = 100
 
-Final = sum(text, semantic, amount) - image_penalty → clamped to [0, 100]
+Document evidence is the largest single signal (40%) because story-proof alignment
+is the hardest to fake and the strongest trust indicator.
 """
 
 from __future__ import annotations
@@ -17,28 +20,51 @@ from typing import List, Tuple
 
 
 def combine_scores(
-    text_score:     int,
-    semantic_score: int,
-    amount_score:   int,
-    image_reuse:    bool,
-    all_flags:      List[str],
+    text_score:      int,
+    semantic_score:  int,
+    amount_score:    int,
+    image_score:     int,
+    document_score:  int,
+    all_flags:       List[str],
 ) -> Tuple[int, str]:
     """
     Returns (final_trust_score: 0-100, risk_level: 'low'|'medium'|'high').
+
+    Each of the first four signals was produced on a 0-25 scale by its module;
+    they are scaled down here to their new weight budgets.
+    document_score is already in 0-40 range.
     """
-    raw = text_score + semantic_score + amount_score
-    penalty = 25 if image_reuse else 0
-    final = max(raw - penalty, 0)
+    # Scale existing signals to new weights
+    adj_text     = round(text_score     * 20 / 25)  # 0-20
+    adj_semantic = round(semantic_score * 15 / 25)  # 0-15
+    adj_amount   = round(amount_score   * 15 / 25)  # 0-15
+    adj_image    = round(image_score    * 10 / 25)  # 0-10
+    doc          = max(0, min(40, document_score))  # 0-40
 
-    # Normalise from 0-75 range to 0-100
-    normalised = int((final / 75) * 100)
-    normalised = max(0, min(100, normalised))
+    base = adj_text + adj_semantic + adj_amount + adj_image + doc
+    base = max(0, min(100, base))
 
-    if normalised >= 70:
+    # Compound penalty for simultaneous high-risk signals
+    high_risk = {
+        "near_duplicate_campaign_detected",
+        "image_reused_from_existing_campaign",
+        "image_possibly_ai_generated",
+        "fraud_keywords_detected",
+        "document_dated_in_future",
+        "no_readable_documents",
+    }
+    hits = sum(1 for f in all_flags if any(h in f for h in high_risk))
+    penalty = min(hits * 3, 12)
+
+    final = max(0, min(100, base - penalty))
+
+    if final >= 70:
         risk = "low"
-    elif normalised >= 40:
+    elif final >= 40:
         risk = "medium"
+    elif final >= 25:
+        risk = "medium"   # needs_more_proof band — still medium risk
     else:
         risk = "high"
 
-    return normalised, risk
+    return final, risk

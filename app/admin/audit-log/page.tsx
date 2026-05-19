@@ -7,7 +7,7 @@ import { Footer } from '@/components/footer';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useWeb3 } from '@/lib/web3-context';
+import { useAuth } from '@/lib/auth-context';
 import { Loader, AlertCircle, Shield, CheckCircle, XCircle, ExternalLink } from 'lucide-react';
 import type { DbAdminAction } from '@/lib/types';
 
@@ -26,7 +26,7 @@ function ActionIcon({ type }: { type: string }) {
 }
 
 export default function AuditLogPage() {
-  const { isAdmin, isConnected, connectWallet } = useWeb3();
+  const { isAdmin } = useAuth();
   const [actions, setActions] = useState<DbAdminAction[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -39,18 +39,6 @@ export default function AuditLogPage() {
       .finally(() => setLoading(false));
   }, [isAdmin]);
 
-  if (!isConnected) {
-    return (
-      <div className="min-h-screen flex flex-col">
-        <Header />
-        <main className="flex-1 flex items-center justify-center">
-          <button onClick={connectWallet} className="underline">Connect admin wallet</button>
-        </main>
-        <Footer />
-      </div>
-    );
-  }
-
   if (!isAdmin) {
     return (
       <div className="min-h-screen flex flex-col">
@@ -58,7 +46,7 @@ export default function AuditLogPage() {
         <main className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <AlertCircle className="w-10 h-10 text-destructive mx-auto mb-3" />
-            <p className="font-medium">Admin wallet required</p>
+            <p className="font-medium">Admin access required</p>
           </div>
         </main>
         <Footer />

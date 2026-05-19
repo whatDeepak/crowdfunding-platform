@@ -27,3 +27,10 @@ mistralai==1.1.0
 # HTTP requests (for image fetching)
 httpx==0.27.2
 requests==2.32.3
+
+# Document alignment: fuzzy entity matching + date parsing
+rapidfuzz==3.10.1
+dateparser==1.2.0
+
+# Local development env loading
+python-dotenv==1.0.1

@@ -1,0 +1,17 @@
+{
+  "name": "crowdfunding-escrow-contracts",
+  "version": "1.0.0",
+  "description": "CrowdfundingEscrow smart contract — Hardhat project",
+  "scripts": {
+    "compile": "hardhat compile",
+    "node": "hardhat node",
+    "deploy-local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy-sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "test": "hardhat test"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0",
+    "dotenv": "^16.4.5"
+  }
+}

@@ -93,6 +93,11 @@ create table campaigns (
     ai_risk_level        ai_risk_enum,
     ai_flags             jsonb,                  -- string[]
     ai_explanation       text,
+    -- Per-signal breakdown (each 0-25)
+    ai_text_score        integer,
+    ai_semantic_score    integer,
+    ai_amount_score      integer,
+    ai_image_score       integer,
     -- MiniLM embedding stored for duplicate detection
     embedding            jsonb,                  -- float[] — all-MiniLM-L6-v2 384-dim vector
     platform_approved    boolean not null default false,

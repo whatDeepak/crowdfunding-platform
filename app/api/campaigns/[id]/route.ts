@@ -9,10 +9,10 @@ import {
 
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await params;
     const [campaign, milestones, endorsements, donations] = await Promise.all([
       getCampaign(id),
       getMilestones(id),
@@ -34,16 +34,17 @@ export async function GET(
 /** PATCH — set contract_id after on-chain campaign creation */
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const { contractId } = await request.json();
 
     if (contractId === undefined || contractId === null) {
       return NextResponse.json({ error: 'contractId required' }, { status: 400 });
     }
 
-    await updateCampaignContractId(params.id, contractId);
+    await updateCampaignContractId(id, contractId);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('PATCH /api/campaigns/[id] error:', error);

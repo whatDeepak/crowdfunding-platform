@@ -48,6 +48,7 @@ export type CampaignDbStatus =
   | 'pending_ai'
   | 'pending_verification'
   | 'pending_review'
+  | 'needs_more_proof'
   | 'active'
   | 'funded'
   | 'completed'
@@ -67,14 +68,43 @@ export type AiReco        = 'approve' | 'flag' | 'reject';
 export type DonationStatus = 'pending' | 'confirmed' | 'failed';
 export type UserType      = 'donor' | 'creator' | 'verifier' | 'admin';
 export type CampaignCategory = 'medical' | 'education' | 'disaster' | 'community';
+export type OrgStatus    = 'pending_approval' | 'more_info_needed' | 'active' | 'suspended' | 'rejected';
+export type OrgType      = 'hospital' | 'ngo' | 'university' | 'pharmacy' | 'legal_aid' | 'other';
+export type GeographicScope = 'local' | 'state' | 'national' | 'international';
+
+export interface DbOrganization {
+  id:                     string;
+  user_id:                string;
+  wallet_address?:        string;
+  org_name:               string;
+  org_type:               OrgType;
+  registration_number:    string;
+  registration_doc_ipfs?: string;
+  website_url?:           string;
+  contact_email?:         string;
+  responsible_person:     string;
+  geographic_scope:       GeographicScope;
+  domains:                CampaignCategory[];
+  tier:                   number;
+  status:                 OrgStatus;
+  suspension_reason?:     string;
+  admin_notes?:           string;
+  total_endorsements:     number;
+  campaigns_gone_live:    number;
+  approved_at?:           string;
+  approved_by?:           string;
+  created_at:             string;
+  updated_at:             string;
+}
 
 export interface DbUser {
   id:                string;
-  wallet_address:    string;
+  auth_id?:          string;        // Supabase auth.users UUID
+  wallet_address?:   string;        // connected MetaMask wallet (nullable — set from profile)
   email?:            string;
   full_name?:        string;
   user_type:         UserType;
-  verifier_org_name?: string;
+  verifier_org_name?: string;       // deprecated — use organizations table
   verifier_category?: CampaignCategory;
   is_active:         boolean;
   created_at:        string;
@@ -98,6 +128,14 @@ export interface DbCampaign {
   ai_risk_level?:      AiRiskLevel;
   ai_flags?:           string[];
   ai_explanation?:     string;
+  ai_text_score?:      number;
+  ai_semantic_score?:  number;
+  ai_amount_score?:    number;
+  ai_image_score?:     number;
+  ai_document_score?:  number;
+  ai_document_flags?:  string[];
+  analysis_version?:   number;
+  last_analysis_at?:   string;
   embedding?:          number[];
   platform_approved:   boolean;
   created_at:          string;
@@ -138,11 +176,33 @@ export interface DbWithdrawalRequest {
 export interface DbVerifierEndorsement {
   id:                      string;
   campaign_id:             string;
+  organization_id:         string;
   verifier_wallet:         string;
   verifier_org_name:       string;
+  org_tier:                number;
   corroborating_doc_ipfs?: string;
   endorsement_note?:       string;
+  is_revoked:              boolean;
+  revoked_by?:             string;
+  revoked_at?:             string;
+  revoked_reason?:         string;
   created_at:              string;
+}
+
+export type VerificationRequestStatus = 'pending' | 'accepted' | 'declined' | 'withdrawn' | 'expired';
+
+export interface DbVerificationRequest {
+  id:               string;
+  campaign_id:      string;
+  organization_id:  string;
+  creator_note?:    string;
+  status:           VerificationRequestStatus;
+  decline_reason?:  string;
+  expires_at:       string;
+  created_at:       string;
+  updated_at:       string;
+  // Joined fields (returned by some queries)
+  organizations?:   Pick<DbOrganization, 'org_name' | 'org_type' | 'tier' | 'domains'>;
 }
 
 export interface DbDonation {
@@ -211,15 +271,21 @@ export interface CampaignAnalysisRequest {
 }
 
 export interface CampaignAnalysisResult {
-  trustScore:     number;             // 0–100 combined
-  riskLevel:      AiRiskLevel;
-  textScore:      number;             // 0–25
-  semanticScore:  number;             // 0–25
-  amountScore:    number;             // 0–25
-  imageReuseFlag: boolean;
-  flags:          string[];
-  explanation:    string;
-  embedding:      number[];           // 384-dim vector for caching
+  trustScore:              number;    // 0–100 combined
+  riskLevel:               AiRiskLevel;
+  textScore:               number;   // 0–25 (raw, displayed scaled to /20)
+  semanticScore:           number;   // 0–25 (raw, displayed scaled to /15)
+  amountScore:             number;   // 0–25 (raw, displayed scaled to /15)
+  imageScore:              number;   // 0–25 (raw, displayed scaled to /10)
+  documentAlignmentScore:  number;   // 0–40 — story-vs-proof entity matching
+  imageReuseFlag:          boolean;  // pHash match
+  isAiGenerated:           boolean;  // Groq Vision deepfake verdict
+  isStockPhoto:            boolean;
+  visionDescription:       string;   // what Groq Vision saw
+  documentFlags:           string[]; // entity contradiction / timeline flags
+  flags:                   string[]; // all flags combined
+  explanation:             string;
+  embedding:               number[]; // 384-dim MiniLM vector
 }
 
 export interface ProofAnalysisRequest {

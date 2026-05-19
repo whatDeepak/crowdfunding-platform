@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Header } from '@/components/header';
 import { Footer } from '@/components/footer';
@@ -14,13 +14,16 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useWeb3 } from '@/lib/web3-context';
+import { useAuth } from '@/lib/auth-context';
 import { toast } from 'sonner';
 import { ethers } from 'ethers';
 import {
   Loader, AlertCircle, CheckCircle, Plus, Trash2,
-  Upload, ImageIcon, FileText, ChevronRight, ChevronLeft, Rocket,
+  Upload, ImageIcon, FileText, ChevronRight, ChevronLeft, Rocket, XCircle,
 } from 'lucide-react';
 import type { CampaignCategory } from '@/lib/types';
+import { OrgSearchPanel } from '@/components/org-search-panel';
+import { ReanalyzePanel } from '@/components/reanalyze-panel';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,12 +50,13 @@ interface FormState {
 }
 
 interface AiResult {
-  trust_score:   number;
-  risk_level:    'low' | 'medium' | 'high';
-  flags:         string[];
-  explanation:   string;
-  campaignDbId:  string;
-  campaignStatus: string;
+  trust_score:      number;
+  risk_level:       'low' | 'medium' | 'high';
+  flags:            string[];
+  explanation:      string;
+  campaignDbId:     string;
+  campaignStatus:   string;
+  campaignCategory: CampaignCategory;
 }
 
 const INITIAL_MILESTONE: MilestoneInput = { title: '', description: '', amount: '' };
@@ -85,13 +89,33 @@ function riskLabel(risk: string) {
 export default function CreateCampaignPage() {
   const router = useRouter();
   const { contract, account, isConnected } = useWeb3();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const docInputRef  = useRef<HTMLInputElement>(null);
+  const { user } = useAuth();
+  const fileInputRef    = useRef<HTMLInputElement>(null);
+  const docInputRef     = useRef<HTMLInputElement>(null);
+  const resubmitDocRef  = useRef<HTMLInputElement>(null);
 
-  const [step, setStep]           = useState(0);
-  const [submitting, setSubmitting] = useState(false);
-  const [publishing, setPublishing] = useState(false);
-  const [aiResult, setAiResult]   = useState<AiResult | null>(null);
+  const [step, setStep]             = useState(0);
+  const [submitting, setSubmitting]  = useState(false);
+  const [publishing, setPublishing]  = useState(false);
+  const [aiResult, setAiResult]     = useState<AiResult | null>(null);
+
+  // Org search state
+  const [orgTab, setOrgTab]               = useState<'verify' | 'improve'>('verify');
+  const [orgSearch, setOrgSearch]         = useState('');
+  const [orgTypeFilter, setOrgTypeFilter] = useState('');
+  const [geoFilter, setGeoFilter]         = useState('');
+  const [orgPage, setOrgPage]             = useState(1);
+  const [orgs, setOrgs]                   = useState<any[]>([]);
+  const [orgTotal, setOrgTotal]           = useState(0);
+  const [orgTotalPages, setOrgTotalPages] = useState(0);
+  const [orgLoading, setOrgLoading]       = useState(false);
+  const [sentRequests, setSentRequests]   = useState<Set<string>>(new Set());
+  const [requestNotes, setRequestNotes]   = useState<Record<string, string>>({});
+  const [requestingOrg, setRequestingOrg] = useState<string | null>(null);
+
+  // Re-analyze state (for needs_more_proof)
+  const [resubmitFiles, setResubmitFiles] = useState<File[]>([]);
+  const [reanalyzing, setReanalyzing]     = useState(false);
 
   const [form, setForm] = useState<FormState>({
     title:        '',
@@ -159,6 +183,116 @@ export default function CreateCampaignPage() {
     if (step === 3) return isConnected;
     return false;
   };
+
+  // ── Org search ────────────────────────────────────────────────────────────
+
+  const loadOrgs = useCallback(async (
+    page: number, q: string, orgType: string, geo: string, domain: string
+  ) => {
+    setOrgLoading(true);
+    try {
+      const params = new URLSearchParams({
+        status: 'active', page: String(page), per_page: '5',
+        ...(q       && { q }),
+        ...(domain  && { domain }),
+        ...(orgType && { org_type: orgType }),
+        ...(geo     && { geographic_scope: geo }),
+      });
+      const res  = await fetch(`/api/organizations?${params}`);
+      const data = await res.json();
+      setOrgs(data.orgs ?? []);
+      setOrgTotal(data.total ?? 0);
+      setOrgTotalPages(data.total_pages ?? 0);
+    } finally {
+      setOrgLoading(false);
+    }
+  }, []);
+
+  // Load orgs when the verify tab becomes active
+  useEffect(() => {
+    if (aiResult?.campaignStatus === 'pending_verification' && orgTab === 'verify') {
+      loadOrgs(orgPage, orgSearch, orgTypeFilter, geoFilter, aiResult.campaignCategory ?? '');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiResult?.campaignStatus, orgTab]);
+
+  async function handleRequestVerification(orgId: string) {
+    if (!aiResult || !user) {
+      toast.error('Please sign in to request verification');
+      return;
+    }
+    setRequestingOrg(orgId);
+    try {
+      const res = await fetch('/api/verification-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaignId:     aiResult.campaignDbId,
+          organizationId: orgId,
+          creatorNote:    requestNotes[orgId]?.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? 'Failed to send request');
+      } else {
+        setSentRequests((prev) => new Set([...prev, orgId]));
+        toast.success('Verification request sent!');
+      }
+    } catch {
+      toast.error('Network error');
+    } finally {
+      setRequestingOrg(null);
+    }
+  }
+
+  async function handleReanalyze() {
+    if (!aiResult || resubmitFiles.length === 0) return;
+    setReanalyzing(true);
+    try {
+      // Upload new docs
+      toast.loading('Uploading documents…');
+      const newCids = await Promise.all(resubmitFiles.map(uploadFile));
+      toast.dismiss();
+
+      // Call resubmit endpoint
+      toast.loading('Re-analyzing…');
+      const res = await fetch(`/api/campaigns/${aiResult.campaignDbId}/resubmit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newDocumentCids: newCids }),
+      });
+      const data = await res.json();
+      toast.dismiss();
+
+      if (!res.ok) {
+        toast.error(data.error ?? 'Re-analysis failed');
+      } else {
+        setAiResult({
+          ...aiResult,
+          trust_score:     data.trust_score,
+          risk_level:      data.risk_level,
+          flags:           data.flags ?? [],
+          explanation:     data.explanation ?? '',
+          campaignStatus:  data.campaign_status ?? aiResult.campaignStatus,
+        });
+        setResubmitFiles([]);
+        toast.success('Analysis updated!');
+      }
+    } catch {
+      toast.dismiss();
+      toast.error('Something went wrong');
+    } finally {
+      setReanalyzing(false);
+    }
+  }
+
+  function copyInviteLink() {
+    const category = aiResult?.campaignCategory ?? form.category;
+    const link = `${window.location.origin}/register/organization?category=${category}&campaign=${aiResult?.campaignDbId ?? ''}`;
+    navigator.clipboard.writeText(link);
+    toast.success('Invite link copied! Send it to the organization.');
+  }
 
   // ── Submit: upload → create DB → run AI ───────────────────────────────────
 
@@ -238,12 +372,13 @@ export default function CreateCampaignPage() {
       const aiData = await aiRes.json();
 
       setAiResult({
-        trust_score:    aiData.trust_score,
-        risk_level:     aiData.risk_level,
-        flags:          aiData.flags ?? [],
-        explanation:    aiData.explanation ?? '',
-        campaignDbId:   campaign.id,
-        campaignStatus: aiData.campaign_status ?? 'pending_review',
+        trust_score:      aiData.trust_score,
+        risk_level:       aiData.risk_level,
+        flags:            aiData.flags ?? [],
+        explanation:      aiData.explanation ?? '',
+        campaignDbId:     campaign.id,
+        campaignStatus:   aiData.campaign_status ?? 'pending_review',
+        campaignCategory: form.category,
       });
 
       toast.dismiss();
@@ -322,53 +457,59 @@ export default function CreateCampaignPage() {
   // ── AI Result screen ──────────────────────────────────────────────────────
 
   if (aiResult) {
-    const statusMessages: Record<string, string> = {
-      active:               'Your campaign scored highly and is now live! Donors can see it immediately.',
-      pending_verification: 'A trusted verifier (hospital, NGO) needs to endorse your campaign before it goes live.',
-      pending_review:       'Your campaign has been flagged for admin review. We\'ll evaluate it within 48 hours.',
-    };
+    const isActive       = aiResult.campaignStatus === 'active';
+    const isPendingVerif = aiResult.campaignStatus === 'pending_verification';
+    const needsMoreProof = aiResult.campaignStatus === 'needs_more_proof';
+    const isRejected     = aiResult.campaignStatus === 'rejected';
 
     return (
       <div className="min-h-screen flex flex-col">
         <Header />
-        <main className="flex-1 container mx-auto px-4 py-16 max-w-2xl">
-          <h1 className="text-3xl font-bold mb-8">AI Analysis Complete</h1>
+        <main className="flex-1 container mx-auto px-4 py-10 max-w-3xl">
+          <h1 className="text-3xl font-bold mb-2">AI Analysis Complete</h1>
+          <p className="text-muted-foreground mb-8">Your campaign has been analyzed. Here's what to do next.</p>
 
+          {/* ── Trust Score Card ── */}
           <Card className="mb-6">
             <CardHeader>
-              <CardTitle>Trust Score</CardTitle>
+              <CardTitle className="flex items-center justify-between">
+                Trust Score
+                <Badge className={
+                  aiResult.risk_level === 'low'    ? 'bg-green-500 text-white' :
+                  aiResult.risk_level === 'medium' ? 'bg-yellow-500 text-white' :
+                  'bg-destructive text-destructive-foreground'
+                }>
+                  {riskLabel(aiResult.risk_level)} Risk
+                </Badge>
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-4">
                 <span className={`text-6xl font-bold ${trustColor(aiResult.trust_score)}`}>
                   {aiResult.trust_score}
                 </span>
-                <div>
-                  <div className="text-sm text-muted-foreground mb-1">out of 100</div>
-                  <Badge className={
-                    aiResult.risk_level === 'low'    ? 'bg-success text-success-foreground' :
-                    aiResult.risk_level === 'medium' ? 'bg-warning text-warning-foreground' :
-                    'bg-destructive text-destructive-foreground'
-                  }>
-                    {riskLabel(aiResult.risk_level)} Risk
-                  </Badge>
+                <div className="flex-1">
+                  <div className="text-sm text-muted-foreground mb-2">out of 100</div>
+                  <Progress value={aiResult.trust_score} className="h-3" />
+                  <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    <span>0 — Rejected</span>
+                    <span>25 — Needs Proof</span>
+                    <span>40 — Needs Verification</span>
+                    <span>70+ — Live</span>
+                  </div>
                 </div>
               </div>
-
-              <Progress value={aiResult.trust_score} className="h-3" />
-
               {aiResult.explanation && (
-                <p className="text-sm text-muted-foreground leading-relaxed">
+                <p className="text-sm text-muted-foreground leading-relaxed border-l-2 border-muted pl-3">
                   {aiResult.explanation}
                 </p>
               )}
-
               {aiResult.flags.length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">Flags:</p>
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium">Issues to address:</p>
                   {aiResult.flags.map((f) => (
-                    <div key={f} className="flex items-center gap-2 text-sm text-warning">
-                      <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    <div key={f} className="flex items-center gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-950/30 rounded px-2 py-1">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                       <span>{f.replace(/_/g, ' ')}</span>
                     </div>
                   ))}
@@ -377,30 +518,170 @@ export default function CreateCampaignPage() {
             </CardContent>
           </Card>
 
-          <Alert className="mb-6">
-            <CheckCircle className="w-4 h-4" />
-            <AlertDescription>
-              {statusMessages[aiResult.campaignStatus] ?? 'Your campaign has been submitted for review.'}
-            </AlertDescription>
-          </Alert>
+          {/* ── ACTIVE: campaign is live ── */}
+          {isActive && (
+            <div className="space-y-4">
+              <Alert className="border-green-500 bg-green-50 dark:bg-green-950/30">
+                <CheckCircle className="w-4 h-4 text-green-600" />
+                <AlertDescription className="text-green-800 dark:text-green-300 font-medium">
+                  Your campaign scored highly and is approved! Publish to blockchain to go live immediately.
+                </AlertDescription>
+              </Alert>
+              <div className="flex gap-3">
+                <Button onClick={handlePublish} disabled={publishing} size="lg" className="flex-1 gap-2">
+                  {publishing ? <><Loader className="w-4 h-4 animate-spin" /> Publishing…</> : <><Rocket className="w-4 h-4" /> Publish on Blockchain</>}
+                </Button>
+                <Button variant="outline" onClick={() => router.push(`/campaigns/${aiResult.campaignDbId}`)}>
+                  Preview Campaign
+                </Button>
+              </div>
+            </div>
+          )}
 
-          <div className="flex gap-3">
-            <Button
-              onClick={handlePublish}
-              disabled={publishing}
-              size="lg"
-              className="flex-1 gap-2"
-            >
-              {publishing ? (
-                <><Loader className="w-4 h-4 animate-spin" /> Publishing…</>
-              ) : (
-                <><Rocket className="w-4 h-4" /> Publish on Blockchain</>
+          {/* ── PENDING VERIFICATION: 40-69 ── */}
+          {isPendingVerif && (
+            <div className="space-y-4">
+              <Alert className="border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30">
+                <AlertCircle className="w-4 h-4 text-yellow-600" />
+                <AlertDescription className="text-yellow-800 dark:text-yellow-300">
+                  Score 40–69 — your campaign needs endorsement from a trusted organization (hospital, NGO, university)
+                  before it goes live. You can request verification now, or improve your campaign first to boost your score.
+                </AlertDescription>
+              </Alert>
+
+              {/* Publish CTA */}
+              <Card className="p-4 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium">Step 1: Register on Blockchain</p>
+                  <p className="text-xs text-muted-foreground">Publishes the escrow contract entry — required before donations can be received.</p>
+                </div>
+                <Button onClick={handlePublish} disabled={publishing} className="gap-2 shrink-0">
+                  {publishing ? <Loader className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
+                  {publishing ? 'Publishing…' : 'Publish'}
+                </Button>
+              </Card>
+
+              {/* Tabs */}
+              <div className="flex gap-1 border-b">
+                <button
+                  onClick={() => setOrgTab('verify')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    orgTab === 'verify' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  Step 2: Request Verification
+                </button>
+                <button
+                  onClick={() => setOrgTab('improve')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    orgTab === 'improve' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  Or: Improve & Re-analyze
+                </button>
+              </div>
+
+              {orgTab === 'verify' && (
+                <OrgSearchPanel
+                  campaignId={aiResult.campaignDbId}
+                  category={aiResult.campaignCategory}
+                  orgs={orgs}
+                  orgLoading={orgLoading}
+                  orgTotal={orgTotal}
+                  orgPage={orgPage}
+                  orgTotalPages={orgTotalPages}
+                  orgSearch={orgSearch}
+                  orgTypeFilter={orgTypeFilter}
+                  geoFilter={geoFilter}
+                  sentRequests={sentRequests}
+                  requestNotes={requestNotes}
+                  requestingOrg={requestingOrg}
+                  onSearch={(q) => {
+                    setOrgSearch(q);
+                    setOrgPage(1);
+                    loadOrgs(1, q, orgTypeFilter, geoFilter, aiResult.campaignCategory);
+                  }}
+                  onOrgTypeChange={(t) => {
+                    setOrgTypeFilter(t);
+                    setOrgPage(1);
+                    loadOrgs(1, orgSearch, t, geoFilter, aiResult.campaignCategory);
+                  }}
+                  onGeoChange={(g) => {
+                    setGeoFilter(g);
+                    setOrgPage(1);
+                    loadOrgs(1, orgSearch, orgTypeFilter, g, aiResult.campaignCategory);
+                  }}
+                  onPageChange={(p) => {
+                    setOrgPage(p);
+                    loadOrgs(p, orgSearch, orgTypeFilter, geoFilter, aiResult.campaignCategory);
+                  }}
+                  onNoteChange={(id, note) => setRequestNotes((prev) => ({ ...prev, [id]: note }))}
+                  onRequest={handleRequestVerification}
+                  onInvite={copyInviteLink}
+                />
               )}
-            </Button>
-            <Button variant="outline" onClick={() => router.push('/campaigns')}>
-              View Campaigns
-            </Button>
-          </div>
+
+              {orgTab === 'improve' && (
+                <ReanalyzePanel
+                  files={resubmitFiles}
+                  loading={reanalyzing}
+                  inputRef={resubmitDocRef}
+                  onFilesChange={setResubmitFiles}
+                  onReanalyze={handleReanalyze}
+                />
+              )}
+            </div>
+          )}
+
+          {/* ── NEEDS MORE PROOF: 25-39 ── */}
+          {needsMoreProof && (
+            <div className="space-y-4">
+              <Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950/30">
+                <AlertCircle className="w-4 h-4 text-orange-600" />
+                <AlertDescription className="text-orange-800 dark:text-orange-300">
+                  Score 25–39 — your campaign needs more supporting documents before it can be verified.
+                  Upload relevant proof (medical records, invoices, ID) and re-analyze to improve your score.
+                </AlertDescription>
+              </Alert>
+              <ReanalyzePanel
+                files={resubmitFiles}
+                loading={reanalyzing}
+                inputRef={resubmitDocRef}
+                onFilesChange={setResubmitFiles}
+                onReanalyze={handleReanalyze}
+              />
+              <Button variant="outline" className="w-full" onClick={() => router.push('/dashboard/my-campaigns')}>
+                Manage from Dashboard
+              </Button>
+            </div>
+          )}
+
+          {/* ── REJECTED: < 25 ── */}
+          {isRejected && (
+            <div className="space-y-4">
+              <Alert variant="destructive">
+                <XCircle className="w-4 h-4" />
+                <AlertDescription>
+                  Score below 25 — your campaign has been rejected due to insufficient information.
+                  Your campaign description is too short, no documents were provided, or the requested
+                  amount appears unreasonable. Go to your dashboard to add more details and re-submit.
+                </AlertDescription>
+              </Alert>
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 space-y-2">
+                <p className="text-sm font-medium">To improve your score:</p>
+                <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                  <li>Write a detailed story (minimum 200 words with specific names, dates, places)</li>
+                  <li>Upload medical records, identity proof, cost estimates, or official letters</li>
+                  <li>Add a campaign image showing the real situation</li>
+                  <li>Ensure the ETH amount matches your category's typical range</li>
+                  <li>Avoid urgent/guarantee language that triggers fraud filters</li>
+                </ul>
+              </div>
+              <Button className="w-full" onClick={() => router.push('/dashboard/my-campaigns')}>
+                Go to My Campaigns →
+              </Button>
+            </div>
+          )}
         </main>
         <Footer />
       </div>

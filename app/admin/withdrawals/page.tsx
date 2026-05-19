@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useWeb3 } from '@/lib/web3-context';
+import { useAuth } from '@/lib/auth-context';
 import { toast } from 'sonner';
 import {
   Loader, AlertCircle, CheckCircle, XCircle,
@@ -24,7 +25,8 @@ interface WithdrawalWithCampaign extends DbWithdrawalRequest {
 }
 
 export default function AdminWithdrawalsPage() {
-  const { isAdmin, isConnected, connectWallet, contract, account } = useWeb3();
+  const { contract, account } = useWeb3();
+  const { isAdmin } = useAuth();
 
   const [requests, setRequests]   = useState<WithdrawalWithCampaign[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -118,18 +120,6 @@ export default function AdminWithdrawalsPage() {
     }
   };
 
-  if (!isConnected) {
-    return (
-      <div className="min-h-screen flex flex-col">
-        <Header />
-        <main className="flex-1 flex items-center justify-center">
-          <Button onClick={connectWallet}>Connect Admin Wallet</Button>
-        </main>
-        <Footer />
-      </div>
-    );
-  }
-
   if (!isAdmin) {
     return (
       <div className="min-h-screen flex flex-col">
@@ -137,7 +127,7 @@ export default function AdminWithdrawalsPage() {
         <main className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <AlertCircle className="w-10 h-10 text-destructive mx-auto mb-3" />
-            <p className="font-medium">Admin wallet required</p>
+            <p className="font-medium">Admin access required</p>
           </div>
         </main>
         <Footer />

@@ -1,5 +1,7 @@
 require('@nomicfoundation/hardhat-toolbox');
+// Load .env.local first (overrides .env), fall back to .env
 require('dotenv').config({ path: '.env.local' });
+require('dotenv').config({ path: '.env', override: false });
 
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL || '';
 const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY || '0x' + '0'.repeat(64);

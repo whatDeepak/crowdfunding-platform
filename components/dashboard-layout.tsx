@@ -6,9 +6,19 @@ import { usePathname } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import {
   Shield, LayoutDashboard, Search, Heart, Activity,
-  LogOut, Wallet, Settings, ShieldCheck,
+  LogOut, Wallet, Settings, ShieldCheck, Copy, RefreshCw, WalletMinimal, X,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { toast } from 'sonner';
 import { useWeb3 } from '@/lib/web3-context';
+import { useAuth } from '@/lib/auth-context';
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -33,7 +43,40 @@ function NavLink({ href, icon: Icon, label }: { href: string; icon: React.Elemen
 }
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
-  const { account, isConnected, isAdmin, disconnectWallet } = useWeb3();
+  const { account, isConnected, connectWallet, disconnectWallet, balance, loading: walletLoading } = useWeb3();
+  const { isAdmin, isVerifier, signOut, dbUser, user } = useAuth();
+
+  const shortAddr = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+  const shortBal  = (b: string) => { try { return parseFloat(b).toFixed(3); } catch { return '0.000'; } };
+
+  function copyAddress() {
+    if (!account) return;
+    navigator.clipboard.writeText(account);
+    toast.success('Address copied');
+  }
+
+  async function switchAccount() {
+    const eth = (window as any).ethereum;
+    if (!eth) return;
+    try {
+      await eth.request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] });
+    } catch { /* user cancelled */ }
+  }
+
+  async function handleSaveWallet() {
+    if (!account || !user) return;
+    try {
+      const res = await fetch('/api/user/wallet', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet_address: account }),
+      });
+      if (res.ok) toast.success('Wallet saved to your profile');
+      else toast.error('Failed to save wallet');
+    } catch {
+      toast.error('Failed to save wallet');
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -45,11 +88,43 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
           </Link>
 
           <div className="flex items-center gap-3">
-            {isConnected && account && (
-              <div className="text-sm text-muted-foreground hidden sm:block">
-                <Wallet className="inline h-4 w-4 mr-1" />
-                {account.slice(0, 6)}…{account.slice(-4)}
-              </div>
+            {isConnected && account ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="flex items-center gap-1.5 px-2.5 py-1.5 bg-muted hover:bg-muted/70 rounded-lg text-xs transition-colors cursor-pointer">
+                    <Wallet className="w-3 h-3 text-primary" />
+                    <span className="font-medium">{shortAddr(account)}</span>
+                    <span className="text-muted-foreground">·</span>
+                    <span>{shortBal(balance ?? '0')} ETH</span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuLabel className="text-xs font-normal text-muted-foreground break-all">
+                    {account}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={copyAddress} className="gap-2">
+                    <Copy className="w-3.5 h-3.5" /> Copy address
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={switchAccount} className="gap-2">
+                    <RefreshCw className="w-3.5 h-3.5" /> Switch account
+                  </DropdownMenuItem>
+                  {user && dbUser?.wallet_address !== account && (
+                    <DropdownMenuItem onClick={handleSaveWallet} className="gap-2">
+                      <WalletMinimal className="w-3.5 h-3.5" /> Save to profile
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={disconnectWallet} className="gap-2 text-destructive focus:text-destructive">
+                    <X className="w-3.5 h-3.5" /> Disconnect
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button variant="outline" size="sm" className="gap-2" onClick={connectWallet} disabled={walletLoading}>
+                <Wallet className="w-3.5 h-3.5" />
+                {walletLoading ? 'Connecting…' : 'Connect Wallet'}
+              </Button>
             )}
             {isAdmin && (
               <Link href="/admin">
@@ -80,14 +155,19 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               </>
             )}
 
+            {(isVerifier || isAdmin) && (
+              <div className="pt-4 mt-4 border-t border-border">
+                <NavLink href="/verify" icon={ShieldCheck} label="Verifier Queue" />
+              </div>
+            )}
+
             <div className="pt-4 mt-4 border-t border-border">
-              <NavLink href="/verify" icon={ShieldCheck} label="Verifier Queue" />
               <button
-                onClick={disconnectWallet}
+                onClick={signOut}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
               >
                 <LogOut className="h-5 w-5" />
-                Disconnect
+                Sign Out
               </button>
             </div>
           </nav>

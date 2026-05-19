@@ -43,7 +43,6 @@ const ESCROW_ABI = [
 interface Web3ContextType {
   account:          string | null;
   isConnected:      boolean;
-  isAdmin:          boolean;
   provider:         BrowserProvider | null;
   contract:         Contract | null;
   balance:          string | null;
@@ -59,10 +58,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
   const [provider,  setProvider]  = useState<BrowserProvider | null>(null);
   const [contract,  setContract]  = useState<Contract | null>(null);
   const [balance,   setBalance]   = useState<string | null>(null);
-  const [isAdmin,   setIsAdmin]   = useState(false);
   const [loading,   setLoading]   = useState(false);
-
-  const adminWallet = process.env.NEXT_PUBLIC_ADMIN_WALLET?.toLowerCase();
 
   async function initProvider(ethereumProvider: unknown) {
     const web3Provider = new BrowserProvider(ethereumProvider as Parameters<typeof BrowserProvider>[0]);
@@ -94,7 +90,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
       setProvider(web3Provider);
       setContract(escrowContract);
       setBalance(ethers.formatEther(bal));
-      setIsAdmin(!!adminWallet && addr === adminWallet);
+      // isAdmin is now managed by useAuth()
     };
 
     tryAutoConnect();
@@ -104,10 +100,9 @@ export function Web3Provider({ children }: { children: ReactNode }) {
         if (accounts.length > 0) {
           const addr = accounts[0].toLowerCase();
           setAccount(addr);
-          setIsAdmin(!!adminWallet && addr === adminWallet);
+          // isAdmin is now managed by useAuth()
         } else {
           setAccount(null);
-          setIsAdmin(false);
         }
       });
 
@@ -135,7 +130,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
       setProvider(web3Provider);
       setContract(escrowContract);
       setBalance(ethers.formatEther(bal));
-      setIsAdmin(!!adminWallet && addr === adminWallet);
+      // isAdmin is now managed by useAuth()
 
       toast.success('Wallet connected');
     } catch (error) {
@@ -151,7 +146,6 @@ export function Web3Provider({ children }: { children: ReactNode }) {
     setProvider(null);
     setContract(null);
     setBalance(null);
-    setIsAdmin(false);
   };
 
   return (
@@ -159,7 +153,6 @@ export function Web3Provider({ children }: { children: ReactNode }) {
       value={{
         account,
         isConnected: !!account,
-        isAdmin,
         provider,
         contract,
         balance,

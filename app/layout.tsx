@@ -3,6 +3,7 @@ import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
 import { Web3Provider } from "@/lib/web3-context"
+import { AuthProvider } from "@/lib/auth-context"
 import { Toaster } from "sonner"
 import "./globals.css"
 
@@ -40,10 +41,12 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${inter.className} font-sans antialiased`}>
-        <Web3Provider>
-          {children}
-          <Toaster />
-        </Web3Provider>
+        <AuthProvider>
+          <Web3Provider>
+            {children}
+            <Toaster />
+          </Web3Provider>
+        </AuthProvider>
         <Analytics />
       </body>
     </html>

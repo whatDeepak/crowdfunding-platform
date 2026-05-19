@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { useWeb3 } from '@/lib/web3-context';
+import { useAuth } from '@/lib/auth-context';
 import { toast } from 'sonner';
 import {
   Loader, AlertCircle, CheckCircle, XCircle, Shield,
@@ -19,7 +20,7 @@ import {
 import type { DbCampaign } from '@/lib/types';
 
 export default function AdminCampaignsPage() {
-  const { isAdmin, isConnected, connectWallet } = useWeb3();
+  const { isAdmin } = useAuth();
 
   const [campaigns, setCampaigns]     = useState<DbCampaign[]>([]);
   const [loading, setLoading]         = useState(true);
@@ -75,18 +76,6 @@ export default function AdminCampaignsPage() {
     }
   };
 
-  if (!isConnected) {
-    return (
-      <div className="min-h-screen flex flex-col">
-        <Header />
-        <main className="flex-1 flex items-center justify-center">
-          <Button onClick={connectWallet}>Connect Admin Wallet</Button>
-        </main>
-        <Footer />
-      </div>
-    );
-  }
-
   if (!isAdmin) {
     return (
       <div className="min-h-screen flex flex-col">
@@ -94,7 +83,7 @@ export default function AdminCampaignsPage() {
         <main className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <AlertCircle className="w-10 h-10 text-destructive mx-auto mb-3" />
-            <p className="font-medium">Admin wallet required</p>
+            <p className="font-medium">Admin access required</p>
           </div>
         </main>
         <Footer />

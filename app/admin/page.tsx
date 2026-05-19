@@ -8,11 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useWeb3 } from '@/lib/web3-context';
-import { ShieldCheck, Clock, ArrowRight, AlertCircle, Loader, FileText } from 'lucide-react';
+import { useAuth } from '@/lib/auth-context';
+import { ShieldCheck, Clock, ArrowRight, AlertCircle, Loader, FileText, Building2 } from 'lucide-react';
 
 export default function AdminPage() {
-  const { isAdmin, isConnected, connectWallet, account } = useWeb3();
-  const [stats, setStats]   = useState({ pendingCampaigns: 0, pendingWithdrawals: 0 });
+  const { isConnected, account } = useWeb3();
+  const { isAdmin, user } = useAuth();
+  const [stats, setStats]   = useState({ pendingCampaigns: 0, pendingWithdrawals: 0, pendingOrgs: 0 });
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -20,17 +22,19 @@ export default function AdminPage() {
 
     setLoading(true);
     Promise.all([
-      fetch('/api/verifications?queue=true&adminReview=true').then((r) => r.ok ? r.json() : []),
+      fetch('/api/admin/campaigns').then((r) => r.ok ? r.json() : []),
       fetch('/api/withdrawal-requests?pending=true').then((r) => r.ok ? r.json() : []),
-    ]).then(([camps, withdrawals]) => {
+      fetch('/api/organizations?status=pending_approval').then((r) => r.ok ? r.json() : []),
+    ]).then(([camps, withdrawals, orgs]) => {
       setStats({
         pendingCampaigns:   Array.isArray(camps)       ? camps.length       : 0,
         pendingWithdrawals: Array.isArray(withdrawals) ? withdrawals.length : 0,
+        pendingOrgs:        Array.isArray(orgs)        ? orgs.length        : 0,
       });
     }).finally(() => setLoading(false));
   }, [isAdmin]);
 
-  if (!isConnected) {
+  if (!user) {
     return (
       <div className="min-h-screen flex flex-col">
         <Header />
@@ -38,8 +42,8 @@ export default function AdminPage() {
           <div className="text-center">
             <ShieldCheck className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
             <h1 className="text-2xl font-bold mb-2">Admin Access</h1>
-            <p className="text-muted-foreground mb-6">Connect your admin wallet.</p>
-            <Button onClick={connectWallet}>Connect MetaMask</Button>
+            <p className="text-muted-foreground mb-6">Sign in to access the admin panel.</p>
+            <Button asChild><Link href="/login?next=/admin">Sign In</Link></Button>
           </div>
         </main>
         <Footer />
@@ -129,6 +133,26 @@ export default function AdminPage() {
               </CardContent>
             </Card>
           </div>
+
+          <Card className="hover:shadow-md transition-shadow mt-6">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-muted-foreground" />
+                Organization Applications
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-4xl font-bold">{stats.pendingOrgs}</div>
+              <p className="text-sm text-muted-foreground">
+                Trusted verifier registrations awaiting admin approval.
+              </p>
+              <Button asChild variant="outline" className="w-full gap-2">
+                <Link href="/admin/organizations">
+                  Review Applications <ArrowRight className="w-4 h-4" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
 
           <div className="mt-6 text-center">
             <Button asChild variant="outline" className="gap-2">

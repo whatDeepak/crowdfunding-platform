@@ -1,0 +1,40 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "D:\\_D\\Uni\\Major Project\\crowdfunding-platform-ui\\blockchain\\contracts\\CrowdfundingEscrow.sol": {
+      "lastModificationDate": 1779192617473,
+      "contentHash": "c97a2881ab556ed4ec7433958abdab67",
+      "sourceName": "contracts/CrowdfundingEscrow.sol",
+      "solcConfig": {
+        "version": "0.8.19",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "CrowdfundingEscrow"
+      ]
+    }
+  }
+}

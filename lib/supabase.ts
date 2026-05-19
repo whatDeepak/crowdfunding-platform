@@ -1,26 +1,33 @@
-import { createBrowserClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
 import type {
   DbUser,
   DbCampaign,
   DbMilestone,
   DbWithdrawalRequest,
   DbVerifierEndorsement,
+  DbVerificationRequest,
   DbDonation,
   DbAiVerification,
   DbAdminAction,
+  DbOrganization,
   CampaignAnalysisResult,
   ProofAnalysisResult,
   CampaignCategory,
+  OrgStatus,
+  VerificationRequestStatus,
 } from './types';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+// Use service role key server-side (bypasses RLS); fall back to publishable key
+const supabaseKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
-export const supabase = createBrowserClient(supabaseUrl, supabaseKey);
+export const supabase = createClient(supabaseUrl, supabaseKey);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Users
@@ -163,12 +170,19 @@ export async function saveCampaignAiResult(
   const { error } = await supabase
     .from('campaigns')
     .update({
-      ai_trust_score:  result.trustScore,
-      ai_risk_level:   result.riskLevel,
-      ai_flags:        result.flags,
-      ai_explanation:  result.explanation,
-      embedding:       result.embedding,
-      updated_at:      new Date().toISOString(),
+      ai_trust_score:      result.trustScore,
+      ai_risk_level:       result.riskLevel,
+      ai_flags:            result.flags,
+      ai_explanation:      result.explanation,
+      ai_text_score:       result.textScore,
+      ai_semantic_score:   result.semanticScore,
+      ai_amount_score:     result.amountScore,
+      ai_image_score:      result.imageScore,
+      ai_document_score:   result.documentAlignmentScore,
+      ai_document_flags:   result.documentFlags ?? [],
+      last_analysis_at:    new Date().toISOString(),
+      embedding:           result.embedding.length > 0 ? result.embedding : null,
+      updated_at:          new Date().toISOString(),
     })
     .eq('id', id);
 
@@ -449,4 +463,135 @@ export async function getAdminReviewQueue(): Promise<DbCampaign[]> {
 
   if (error) console.error('getAdminReviewQueue error:', error);
   return data ?? [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organizations
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function createOrganization(
+  org: Omit<DbOrganization, 'id' | 'created_at' | 'updated_at' | 'total_endorsements' | 'campaigns_gone_live' | 'tier' | 'status'>
+): Promise<DbOrganization | null> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .insert([{ ...org, tier: 2, status: 'pending_approval', total_endorsements: 0, campaigns_gone_live: 0 }])
+    .select()
+    .single();
+
+  if (error) console.error('createOrganization error:', error);
+  return data;
+}
+
+export async function getOrganizationByUserId(userId: string): Promise<DbOrganization | null> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('user_id', userId)
+    .single();
+
+  if (error && error.code !== 'PGRST116') console.error('getOrganizationByUserId error:', error);
+  return data;
+}
+
+export async function getOrganizationByWallet(walletAddress: string): Promise<DbOrganization | null> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('wallet_address', walletAddress.toLowerCase())
+    .single();
+
+  if (error && error.code !== 'PGRST116') console.error('getOrganizationByWallet error:', error);
+  return data;
+}
+
+export async function getOrganizations(status?: OrgStatus): Promise<DbOrganization[]> {
+  let query = supabase
+    .from('organizations')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (status) query = query.eq('status', status);
+
+  const { data, error } = await query;
+  if (error) console.error('getOrganizations error:', error);
+  return data ?? [];
+}
+
+export async function getActiveOrganizationsForCategory(
+  category: CampaignCategory
+): Promise<DbOrganization[]> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('status', 'active')
+    .contains('domains', [category])
+    .order('tier', { ascending: true })
+    .order('total_endorsements', { ascending: false });
+
+  if (error) console.error('getActiveOrganizationsForCategory error:', error);
+  return data ?? [];
+}
+
+export async function updateOrganizationStatus(
+  id: string,
+  status: OrgStatus,
+  extra?: Partial<DbOrganization>
+): Promise<void> {
+  const { error } = await supabase
+    .from('organizations')
+    .update({ status, ...extra, updated_at: new Date().toISOString() })
+    .eq('id', id);
+
+  if (error) console.error('updateOrganizationStatus error:', error);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verification requests
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function createVerificationRequest(req: {
+  campaign_id:     string;
+  organization_id: string;
+  creator_note?:   string;
+}): Promise<DbVerificationRequest | null> {
+  const { data, error } = await supabase
+    .from('verification_requests')
+    .insert([{ ...req, status: 'pending' }])
+    .select()
+    .single();
+
+  if (error) console.error('createVerificationRequest error:', error);
+  return data;
+}
+
+export async function getVerificationRequests(params: {
+  campaignId?:     string;
+  organizationId?: string;
+  status?:         VerificationRequestStatus;
+}): Promise<DbVerificationRequest[]> {
+  let query = supabase
+    .from('verification_requests')
+    .select('*, organizations(org_name, org_type, tier, domains)')
+    .order('created_at', { ascending: false });
+
+  if (params.campaignId)     query = query.eq('campaign_id', params.campaignId);
+  if (params.organizationId) query = query.eq('organization_id', params.organizationId);
+  if (params.status)         query = query.eq('status', params.status);
+
+  const { data, error } = await query;
+  if (error) console.error('getVerificationRequests error:', error);
+  return data ?? [];
+}
+
+export async function updateVerificationRequest(
+  id: string,
+  status: VerificationRequestStatus,
+  decline_reason?: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('verification_requests')
+    .update({ status, decline_reason, updated_at: new Date().toISOString() })
+    .eq('id', id);
+
+  if (error) console.error('updateVerificationRequest error:', error);
 }
