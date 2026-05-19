@@ -4,79 +4,110 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { BrowserProvider, Contract, ethers } from 'ethers';
 import { toast } from 'sonner';
 
-// Contract ABI (you'll update this after deployment)
-const CROWDFUNDING_ABI = [
-  "function createCampaign(string memory _title, string memory _description, uint256 _targetAmount, uint256 _durationDays, string memory _ipfsHash) public returns (uint256)",
-  "function donate(uint256 _campaignId) public payable",
-  "function getCampaign(uint256 _campaignId) public view returns (tuple(uint256 id, address creator, string title, string description, uint256 targetAmount, uint256 deadline, uint256 amountRaised, uint8 status, string ipfsHash, uint256 createdAt))",
-  "function getCampaignMilestones(uint256 _campaignId) public view returns (tuple(uint256 id, uint256 campaignId, string title, string description, uint256 releaseAmount, uint256 deadline, uint8 status, uint256 votes, uint256 totalVoters)[])",
-  "function getCampaignDonations(uint256 _campaignId) public view returns (tuple(uint256 id, uint256 campaignId, address donor, uint256 amount, uint256 timestamp, bool refunded)[])",
-  "function getCreatorCampaigns(address _creator) public view returns (uint256[])",
-  "function createMilestone(uint256 _campaignId, string memory _title, string memory _description, uint256 _releaseAmount, uint256 _durationDays) public",
-  "function voteMilestone(uint256 _campaignId, uint256 _milestoneId, bool _approve) public",
-  "function withdrawMilestoneFunds(uint256 _campaignId, uint256 _milestoneId) public",
-  "function campaignCounter() public view returns (uint256)",
+// ABI for CrowdfundingEscrow.sol — admin-controlled escrow, no voting
+const ESCROW_ABI = [
+  // Campaign lifecycle
+  "function createCampaign(uint256 targetAmount, uint256 durationDays, string calldata ipfsHash) external returns (uint256)",
+  "function donate(uint256 campaignId) external payable",
+  "function submitWithdrawalRequest(uint256 campaignId, uint256 requestedAmount, string calldata proofIpfsHash) external",
+  "function claimRefund(uint256 campaignId) external",
+
+  // Admin functions
+  "function approveWithdrawal(uint256 campaignId, uint256 requestId) external",
+  "function rejectWithdrawal(uint256 campaignId, uint256 requestId, string calldata reason) external",
+  "function cancelCampaign(uint256 campaignId) external",
+  "function withdrawPlatformFees() external",
+
+  // View functions
+  "function getCampaign(uint256 campaignId) external view returns (tuple(uint256 id, address creator, uint256 targetAmount, uint256 amountRaised, uint256 deadline, uint8 status, string ipfsMetadataHash, uint256 createdAt))",
+  "function getCampaignDonors(uint256 campaignId) external view returns (address[] memory donors, uint256[] memory amounts)",
+  "function getWithdrawalRequests(uint256 campaignId) external view returns (tuple(uint256 id, uint256 campaignId, uint256 requestedAmount, string proofIpfsHash, uint8 status, string rejectionReason, uint256 createdAt)[])",
+  "function getCreatorCampaigns(address creator) external view returns (uint256[])",
+  "function getContractBalance() external view returns (uint256)",
+  "function donorContributions(uint256 campaignId, address donor) external view returns (uint256)",
+  "function campaignCounter() external view returns (uint256)",
+  "function admin() external view returns (address)",
+  "function platformFeePercent() external view returns (uint256)",
+  "function platformFeesCollected() external view returns (uint256)",
+
+  // Events (for filtering)
+  "event CampaignCreated(uint256 indexed campaignId, address indexed creator, uint256 targetAmount, uint256 deadline, string ipfsMetadataHash)",
+  "event DonationReceived(uint256 indexed campaignId, address indexed donor, uint256 amount, uint256 timestamp)",
+  "event WithdrawalRequested(uint256 indexed campaignId, uint256 indexed requestId, uint256 requestedAmount, string proofIpfsHash)",
+  "event WithdrawalApproved(uint256 indexed campaignId, uint256 indexed requestId, address indexed creator, uint256 amountReleased, uint256 platformFee)",
+  "event WithdrawalRejected(uint256 indexed campaignId, uint256 indexed requestId, string reason)",
+  "event CampaignCancelled(uint256 indexed campaignId)",
+  "event DonorRefunded(uint256 indexed campaignId, address indexed donor, uint256 amount)",
 ];
 
 interface Web3ContextType {
-  account: string | null;
-  isConnected: boolean;
-  provider: BrowserProvider | null;
-  contract: Contract | null;
-  balance: string | null;
-  connectWallet: () => Promise<void>;
+  account:          string | null;
+  isConnected:      boolean;
+  isAdmin:          boolean;
+  provider:         BrowserProvider | null;
+  contract:         Contract | null;
+  balance:          string | null;
+  connectWallet:    () => Promise<void>;
   disconnectWallet: () => void;
-  loading: boolean;
+  loading:          boolean;
 }
 
 const Web3Context = createContext<Web3ContextType | undefined>(undefined);
 
 export function Web3Provider({ children }: { children: ReactNode }) {
-  const [account, setAccount] = useState<string | null>(null);
-  const [provider, setProvider] = useState<BrowserProvider | null>(null);
-  const [contract, setContract] = useState<Contract | null>(null);
-  const [balance, setBalance] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [account,   setAccount]   = useState<string | null>(null);
+  const [provider,  setProvider]  = useState<BrowserProvider | null>(null);
+  const [contract,  setContract]  = useState<Contract | null>(null);
+  const [balance,   setBalance]   = useState<string | null>(null);
+  const [isAdmin,   setIsAdmin]   = useState(false);
+  const [loading,   setLoading]   = useState(false);
 
+  const adminWallet = process.env.NEXT_PUBLIC_ADMIN_WALLET?.toLowerCase();
+
+  async function initProvider(ethereumProvider: unknown) {
+    const web3Provider = new BrowserProvider(ethereumProvider as Parameters<typeof BrowserProvider>[0]);
+    const accounts     = await web3Provider.listAccounts();
+    if (accounts.length === 0) return null;
+
+    const addr   = accounts[0].address.toLowerCase();
+    const signer = await web3Provider.getSigner();
+    const contractAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
+
+    let escrowContract: Contract | null = null;
+    if (contractAddress) {
+      escrowContract = new Contract(contractAddress, ESCROW_ABI, signer);
+    }
+
+    const bal = await web3Provider.getBalance(addr);
+
+    return { addr, web3Provider, escrowContract, bal };
+  }
+
+  // Auto-connect on mount if already authorized
   useEffect(() => {
-    const checkIfWalletIsConnected = async () => {
-      try {
-        if (typeof window !== 'undefined' && window.ethereum) {
-          const provider = new BrowserProvider(window.ethereum);
-          const accounts = await provider.listAccounts();
-          
-          if (accounts.length > 0) {
-            const accountAddress = accounts[0].address;
-            setAccount(accountAddress);
-            setProvider(provider);
-            
-            // Initialize contract
-            const signer = await provider.getSigner();
-            const contractAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
-            if (contractAddress) {
-              const crowdfundingContract = new Contract(contractAddress, CROWDFUNDING_ABI, signer);
-              setContract(crowdfundingContract);
-            }
-
-            // Get balance
-            const balance = await provider.getBalance(accountAddress);
-            setBalance(ethers.formatEther(balance));
-          }
-        }
-      } catch (error) {
-        console.error('Error checking wallet connection:', error);
-      }
+    const tryAutoConnect = async () => {
+      if (typeof window === 'undefined' || !window.ethereum) return;
+      const result = await initProvider(window.ethereum);
+      if (!result) return;
+      const { addr, web3Provider, escrowContract, bal } = result;
+      setAccount(addr);
+      setProvider(web3Provider);
+      setContract(escrowContract);
+      setBalance(ethers.formatEther(bal));
+      setIsAdmin(!!adminWallet && addr === adminWallet);
     };
 
-    checkIfWalletIsConnected();
+    tryAutoConnect();
 
-    // Listen for account changes
     if (typeof window !== 'undefined' && window.ethereum) {
       window.ethereum.on('accountsChanged', (accounts: string[]) => {
         if (accounts.length > 0) {
-          setAccount(accounts[0]);
+          const addr = accounts[0].toLowerCase();
+          setAccount(addr);
+          setIsAdmin(!!adminWallet && addr === adminWallet);
         } else {
           setAccount(null);
+          setIsAdmin(false);
         }
       });
 
@@ -84,39 +115,31 @@ export function Web3Provider({ children }: { children: ReactNode }) {
         window.location.reload();
       });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const connectWallet = async () => {
     setLoading(true);
     try {
-      if (typeof window !== 'undefined' && window.ethereum) {
-        const provider = new BrowserProvider(window.ethereum);
-        const accounts = await window.ethereum.request({
-          method: 'eth_requestAccounts',
-        });
-
-        const accountAddress = accounts[0];
-        setAccount(accountAddress);
-        setProvider(provider);
-
-        // Initialize contract
-        const signer = await provider.getSigner();
-        const contractAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
-        if (contractAddress) {
-          const crowdfundingContract = new Contract(contractAddress, CROWDFUNDING_ABI, signer);
-          setContract(crowdfundingContract);
-        }
-
-        // Get balance
-        const balance = await provider.getBalance(accountAddress);
-        setBalance(ethers.formatEther(balance));
-
-        toast.success('Wallet connected successfully');
-      } else {
+      if (typeof window === 'undefined' || !window.ethereum) {
         toast.error('MetaMask is not installed. Please install it to continue.');
+        return;
       }
+
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const result = await initProvider(window.ethereum);
+      if (!result) return;
+
+      const { addr, web3Provider, escrowContract, bal } = result;
+      setAccount(addr);
+      setProvider(web3Provider);
+      setContract(escrowContract);
+      setBalance(ethers.formatEther(bal));
+      setIsAdmin(!!adminWallet && addr === adminWallet);
+
+      toast.success('Wallet connected');
     } catch (error) {
-      console.error('Error connecting wallet:', error);
+      console.error('connectWallet error:', error);
       toast.error('Failed to connect wallet');
     } finally {
       setLoading(false);
@@ -128,6 +151,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
     setProvider(null);
     setContract(null);
     setBalance(null);
+    setIsAdmin(false);
   };
 
   return (
@@ -135,6 +159,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
       value={{
         account,
         isConnected: !!account,
+        isAdmin,
         provider,
         contract,
         balance,

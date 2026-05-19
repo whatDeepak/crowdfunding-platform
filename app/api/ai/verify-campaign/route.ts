@@ -1,128 +1,103 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAIVerification, getCampaignMetadata, createSuspiciousFlag } from '@/lib/supabase';
+import {
+  getAllCampaignEmbeddings,
+  getAllImageHashes,
+  saveCampaignAiResult,
+  updateCampaignStatus,
+  logAiVerification,
+} from '@/lib/supabase';
+import type { CampaignAnalysisRequest, CampaignAnalysisResult } from '@/lib/types';
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-
-interface VerificationRequest {
-  campaignId: number;
-  title: string;
-  description: string;
-  targetAmount: number;
-  creatorAddress: string;
-}
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL;
 
 export async function POST(request: NextRequest) {
   try {
-    if (!GROQ_API_KEY) {
-      return NextResponse.json(
-        { error: 'AI verification is not configured' },
-        { status: 503 }
-      );
+    const body = await request.json() as CampaignAnalysisRequest & { campaignId: string };
+    const { campaignId, ...analysisInput } = body;
+
+    if (!campaignId || !analysisInput.title || !analysisInput.description) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const body: VerificationRequest = await request.json();
-    const { campaignId, title, description, targetAmount, creatorAddress } = body;
-
-    // Check if campaign already verified
-    const existingVerification = await getCampaignMetadata(campaignId);
-    if (existingVerification?.ai_verification_completed) {
-      return NextResponse.json(
-        { error: 'Campaign already verified' },
-        { status: 400 }
-      );
+    if (!AI_SERVICE_URL) {
+      return NextResponse.json({ error: 'AI service not configured' }, { status: 503 });
     }
 
-    // Call Groq to analyze campaign (free API)
-    const analysisPrompt = `
-You are an expert at analyzing crowdfunding campaigns for legitimacy and potential fraud.
-Analyze the following campaign and provide a legitimacy score (0-100) and identify any suspicious elements.
+    // Fetch existing embeddings + image hashes for comparison
+    const [embeddingRows, imageHashes] = await Promise.all([
+      getAllCampaignEmbeddings(),
+      getAllImageHashes(),
+    ]);
 
-Campaign Title: ${title}
-Description: ${description}
-Target Amount: $${targetAmount}
-Creator Address: ${creatorAddress}
+    const existingEmbeddings = embeddingRows
+      .filter((r) => r.id !== campaignId && Array.isArray(r.embedding))
+      .map((r) => r.embedding as number[]);
 
-Respond ONLY with valid JSON (no markdown, no backticks, just pure JSON):
-{
-  "legitimacyScore": number (0-100),
-  "isSuspicious": boolean,
-  "flaggedIssues": [list of strings],
-  "reasoning": string
-}
-
-Be strict but fair. Penalize:
-- Vague or poorly written descriptions (-20 points)
-- Unrealistic targets or timelines (-15 points)
-- Lack of specific details about how funds will be used (-25 points)
-- Common fraud indicators like urgency or pressure tactics (-30 points)
-- Poor grammar and spelling (-10 points)
-`;
-
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-      },
+    // Call the HuggingFace Spaces AI service
+    const aiResponse = await fetch(`${AI_SERVICE_URL}/analyze-campaign`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'mixtral-8x7b-32768',
-        messages: [
-          {
-            role: 'user',
-            content: analysisPrompt,
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 500,
+        title:                 analysisInput.title,
+        description:           analysisInput.description,
+        target_amount_eth:     analysisInput.targetAmountEth,
+        category:              analysisInput.category,
+        document_names:        analysisInput.documentNames ?? [],
+        existing_embeddings:   existingEmbeddings,
+        existing_image_hashes: imageHashes,
+        image_url:             analysisInput.imageUrl,
       }),
     });
 
-    if (!response.ok) {
-      const errorData = await response.text();
-      throw new Error(`Groq API error: ${response.statusText} - ${errorData}`);
+    if (!aiResponse.ok) {
+      const errText = await aiResponse.text();
+      console.error('AI service error:', errText);
+      return NextResponse.json({ error: 'AI service failed' }, { status: 502 });
     }
 
-    const aiResponse = await response.json();
-    const analysisText = aiResponse.choices[0].message.content;
+    const raw = await aiResponse.json();
 
-    // Parse JSON from response
-    const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('Could not parse AI response');
-    }
+    const result: CampaignAnalysisResult = {
+      trustScore:     raw.trust_score,
+      riskLevel:      raw.risk_level,
+      textScore:      raw.text_score,
+      semanticScore:  raw.semantic_score,
+      amountScore:    raw.amount_score,
+      imageReuseFlag: raw.image_reuse_flag,
+      flags:          raw.flags,
+      explanation:    raw.explanation,
+      embedding:      raw.embedding,
+    };
 
-    const analysis = JSON.parse(jsonMatch[0]);
+    // Persist scores to campaign row and update routing status
+    await saveCampaignAiResult(campaignId, result);
 
-    // Store verification result
-    await createAIVerification(campaignId, {
-      legitimacy_score: analysis.legitimacyScore,
-      is_suspicious: analysis.isSuspicious,
-      reasoning: analysis.reasoning,
+    let newStatus: 'active' | 'pending_verification' | 'pending_review';
+    if (result.trustScore >= 70)      newStatus = 'active';
+    else if (result.trustScore >= 40) newStatus = 'pending_verification';
+    else                              newStatus = 'pending_review';
+
+    await updateCampaignStatus(campaignId, newStatus);
+
+    // Audit log
+    await logAiVerification({
+      campaign_id:       campaignId,
+      withdrawal_id:     undefined,
+      verification_type: 'campaign_analysis',
+      text_score:        result.textScore,
+      semantic_score:    result.semanticScore,
+      amount_score:      result.amountScore,
+      image_reuse_flag:  result.imageReuseFlag,
+      final_score:       result.trustScore,
+      risk_level:        result.riskLevel,
+      flags:             result.flags,
+      explanation:       result.explanation,
+      raw_response:      raw,
     });
 
-    // Create suspicious flags if any
-    if (analysis.flaggedIssues && analysis.flaggedIssues.length > 0) {
-      for (const issue of analysis.flaggedIssues) {
-        await createSuspiciousFlag(campaignId, {
-          flag_type: 'content_analysis',
-          description: issue,
-          severity: analysis.isSuspicious ? 'high' : 'medium',
-        });
-      }
-    }
-
-    return NextResponse.json({
-      success: true,
-      campaignId,
-      legitimacyScore: analysis.legitimacyScore,
-      isSuspicious: analysis.isSuspicious,
-      flaggedIssues: analysis.flaggedIssues,
-    });
+    return NextResponse.json({ ...result, campaignStatus: newStatus });
   } catch (error) {
-    console.error('Error verifying campaign:', error);
-    return NextResponse.json(
-      { error: 'Failed to verify campaign' },
-      { status: 500 }
-    );
+    console.error('POST /api/ai/verify-campaign error:', error);
+    return NextResponse.json({ error: 'Analysis failed' }, { status: 500 });
   }
 }
