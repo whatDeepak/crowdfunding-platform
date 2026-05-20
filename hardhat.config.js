@@ -3,7 +3,6 @@ require('@nomicfoundation/hardhat-toolbox');
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config({ path: '.env', override: false });
 
-const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL || '';
 const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY || '0x' + '0'.repeat(64);
 
 /** @type {import('hardhat/config').HardhatUserConfig} */
@@ -24,17 +23,29 @@ module.exports = {
       url: 'http://127.0.0.1:8545',
       chainId: 31337,
     },
-    // Sepolia testnet — get free ETH from:
-    //   https://faucet.quicknode.com/ethereum/sepolia  (no mainnet ETH needed)
-    //   https://cloud.google.com/application/web3/faucet/ethereum/sepolia
-    sepolia: {
-      url: SEPOLIA_RPC_URL,
-      accounts: ADMIN_PRIVATE_KEY ? [ADMIN_PRIVATE_KEY] : [],
-      chainId: 11155111,
+    // Polygon Amoy testnet — free public RPC, no account needed
+    // Faucet: https://faucet.polygon.technology  (select Amoy, need 0.001 POL on mainnet)
+    // Alt faucet: https://www.alchemy.com/faucets/polygon-amoy  (free Alchemy account)
+    amoy: {
+      url: 'https://rpc-amoy.polygon.technology',
+      accounts: [ADMIN_PRIVATE_KEY],
+      chainId: 80002,
     },
   },
   etherscan: {
-    apiKey: process.env.ETHERSCAN_API_KEY || '',
+    apiKey: {
+      polygonAmoy: process.env.POLYGONSCAN_API_KEY || '',
+    },
+    customChains: [
+      {
+        network: 'polygonAmoy',
+        chainId: 80002,
+        urls: {
+          apiURL:     'https://api-amoy.polygonscan.com/api',
+          browserURL: 'https://amoy.polygonscan.com',
+        },
+      },
+    ],
   },
   paths: {
     sources:   './contracts',

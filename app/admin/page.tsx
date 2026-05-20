@@ -7,15 +7,20 @@ import { Footer } from '@/components/footer';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ethers } from 'ethers';
+import { toast } from 'sonner';
+import { parseContractError } from '@/lib/utils';
 import { useWeb3 } from '@/lib/web3-context';
 import { useAuth } from '@/lib/auth-context';
-import { ShieldCheck, Clock, ArrowRight, AlertCircle, Loader, FileText, Building2 } from 'lucide-react';
+import { ShieldCheck, Clock, ArrowRight, AlertCircle, Loader, FileText, Building2, Coins } from 'lucide-react';
 
 export default function AdminPage() {
-  const { isConnected, account } = useWeb3();
+  const { isConnected, account, contract } = useWeb3();
   const { isAdmin, user } = useAuth();
   const [stats, setStats]   = useState({ pendingCampaigns: 0, pendingWithdrawals: 0, pendingOrgs: 0 });
   const [loading, setLoading] = useState(false);
+  const [platformFees, setPlatformFees] = useState<string | null>(null);
+  const [claimingFees, setClaimingFees] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -24,15 +29,43 @@ export default function AdminPage() {
     Promise.all([
       fetch('/api/admin/campaigns').then((r) => r.ok ? r.json() : []),
       fetch('/api/withdrawal-requests?pending=true').then((r) => r.ok ? r.json() : []),
-      fetch('/api/organizations?status=pending_approval').then((r) => r.ok ? r.json() : []),
-    ]).then(([camps, withdrawals, orgs]) => {
+      fetch('/api/organizations?status=pending_approval&per_page=50').then((r) => r.ok ? r.json() : { orgs: [] }),
+    ]).then(([camps, withdrawals, orgsData]) => {
+      const orgsArr = Array.isArray(orgsData) ? orgsData : (orgsData?.orgs ?? []);
       setStats({
         pendingCampaigns:   Array.isArray(camps)       ? camps.length       : 0,
         pendingWithdrawals: Array.isArray(withdrawals) ? withdrawals.length : 0,
-        pendingOrgs:        Array.isArray(orgs)        ? orgs.length        : 0,
+        pendingOrgs:        orgsArr.length,
       });
     }).finally(() => setLoading(false));
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || !contract) return;
+    contract.platformFeesCollected().then((raw: bigint) => {
+      setPlatformFees(ethers.formatEther(raw));
+    }).catch(() => {});
+  }, [isAdmin, contract]);
+
+  const handleClaimFees = async () => {
+    if (!contract) { toast.error('Connect MetaMask first'); return; }
+    setClaimingFees(true);
+    try {
+      const tx = await contract.withdrawPlatformFees();
+      toast.info('Transaction submitted — waiting for confirmation…');
+      await tx.wait();
+      toast.success('Platform fees withdrawn to admin wallet');
+      // Refresh balance
+      contract.platformFeesCollected().then((raw: bigint) => {
+        const { ethers } = require('ethers');
+        setPlatformFees(ethers.formatEther(raw));
+      }).catch(() => {});
+    } catch (err: any) {
+      toast.error(parseContractError(err));
+    } finally {
+      setClaimingFees(false);
+    }
+  };
 
   if (!user) {
     return (
@@ -150,6 +183,36 @@ export default function AdminPage() {
                 <Link href="/admin/organizations">
                   Review Applications <ArrowRight className="w-4 h-4" />
                 </Link>
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="hover:shadow-md transition-shadow mt-6">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Coins className="w-5 h-5 text-success" />
+                Platform Revenue
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-4xl font-bold text-success">
+                {platformFees != null ? `${parseFloat(platformFees).toFixed(4)} ETH` : '—'}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                2% platform fee collected from approved withdrawals, held in the escrow contract.
+              </p>
+              <Button
+                className="w-full gap-2"
+                variant="outline"
+                disabled={claimingFees || !contract || platformFees === '0.0'}
+                onClick={handleClaimFees}
+              >
+                {claimingFees ? (
+                  <Loader className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Coins className="w-4 h-4" />
+                )}
+                Withdraw Fees via MetaMask
               </Button>
             </CardContent>
           </Card>

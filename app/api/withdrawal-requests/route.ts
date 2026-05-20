@@ -4,7 +4,8 @@ import {
   getWithdrawalRequests,
   getAllPendingWithdrawals,
   getMilestones,
-  updateCampaignStatus,
+  getCampaign,
+  updateMilestoneStatus,
 } from '@/lib/supabase';
 import type { DbWithdrawalRequest } from '@/lib/types';
 
@@ -44,9 +45,66 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Update milestone status if milestone_id provided
+    // Fetch campaign for contract and balance checks
+    const campaign = await getCampaign(body.campaign_id!);
+    if (!campaign) {
+      return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
+    }
+    if (campaign.contract_id == null) {
+      return NextResponse.json({ error: 'Campaign is not published on-chain yet' }, { status: 409 });
+    }
+
+    const existing = await getWithdrawalRequests(body.campaign_id!);
+
+    // Milestone-specific validation
     if (body.milestone_id) {
-      // Milestone status update will be handled when admin approves
+      const milestones = await getMilestones(body.campaign_id!);
+      const milestone  = milestones.find((m) => m.id === body.milestone_id);
+
+      if (!milestone) {
+        return NextResponse.json({ error: 'Milestone not found' }, { status: 404 });
+      }
+      if (milestone.status !== 'pending') {
+        return NextResponse.json(
+          { error: 'This milestone already has an active or completed withdrawal' },
+          { status: 409 }
+        );
+      }
+
+      // All milestones with lower sequence_order must be released
+      const blockers = milestones.filter(
+        (m) => m.sequence_order < milestone.sequence_order && m.status !== 'released'
+      );
+      if (blockers.length > 0) {
+        return NextResponse.json(
+          { error: 'Previous milestones must be completed before requesting this one' },
+          { status: 409 }
+        );
+      }
+
+      // No pending or approved withdrawal already exists for this milestone
+      const duplicate = existing.find(
+        (w) => w.milestone_id === body.milestone_id &&
+               (w.status === 'pending' || w.status === 'approved')
+      );
+      if (duplicate) {
+        return NextResponse.json(
+          { error: 'A withdrawal request already exists for this milestone' },
+          { status: 409 }
+        );
+      }
+    }
+
+    // Available balance check
+    const totalWithdrawn = existing
+      .filter((w) => w.status === 'approved')
+      .reduce((s, w) => s + Number(w.requested_amount_eth), 0);
+    const availableBalance = (campaign.current_amount_eth ?? 0) - totalWithdrawn;
+    if (Number(body.requested_amount_eth) > availableBalance + 0.000001) {
+      return NextResponse.json(
+        { error: `Requested amount exceeds available balance (${availableBalance.toFixed(4)} ETH)` },
+        { status: 409 }
+      );
     }
 
     const withdrawalRequest = await createWithdrawalRequest({
@@ -61,6 +119,11 @@ export async function POST(request: NextRequest) {
 
     if (!withdrawalRequest) {
       return NextResponse.json({ error: 'Failed to create withdrawal request' }, { status: 500 });
+    }
+
+    // Lock the milestone
+    if (body.milestone_id) {
+      await updateMilestoneStatus(body.milestone_id, 'withdrawal_requested');
     }
 
     return NextResponse.json(withdrawalRequest, { status: 201 });

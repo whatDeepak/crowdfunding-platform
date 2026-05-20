@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateWithdrawalStatus, logAdminAction } from '@/lib/supabase';
+import { updateWithdrawalStatus, logAdminAction, updateMilestoneStatus, supabase } from '@/lib/supabase';
 
 /**
  * POST /api/admin/approve-withdrawal
@@ -23,6 +23,16 @@ export async function POST(request: NextRequest) {
     await updateWithdrawalStatus(withdrawalId, 'approved', {
       admin_tx_hash: txHash,
     });
+
+    // Mark the milestone as released
+    const { data: wr } = await supabase
+      .from('withdrawal_requests')
+      .select('milestone_id')
+      .eq('id', withdrawalId)
+      .single();
+    if (wr?.milestone_id) {
+      await updateMilestoneStatus(wr.milestone_id, 'released');
+    }
 
     await logAdminAction({
       admin_wallet: adminWallet,

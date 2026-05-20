@@ -11,10 +11,11 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Shield, CheckCircle, ExternalLink, Wallet, AlertCircle,
-  Loader, ShieldCheck, Building2, FileText, Clock, RefreshCw,
+  Loader, ShieldCheck, Building2, FileText, Clock, RefreshCw, Rocket, ArrowRight, Upload,
 } from 'lucide-react';
 import { useWeb3 } from '@/lib/web3-context';
 import { useAuth } from '@/lib/auth-context';
@@ -22,6 +23,7 @@ import { OrgSearchPanel } from '@/components/org-search-panel';
 import { ReanalyzePanel } from '@/components/reanalyze-panel';
 import { toast } from 'sonner';
 import { ethers } from 'ethers';
+import { parseContractError } from '@/lib/utils';
 import type { DbCampaign, DbMilestone, DbVerifierEndorsement, DbDonation } from '@/lib/types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -111,6 +113,15 @@ export default function CampaignDetailPage() {
   const [reanalyzing, setReanalyzing]     = useState(false);
   const resubmitDocRef                    = useRef<HTMLInputElement | null>(null);
 
+  // Withdrawal state (creator only)
+  const [withdrawOpen, setWithdrawOpen]     = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawDesc, setWithdrawDesc]     = useState('');
+  const [withdrawFile, setWithdrawFile]     = useState<File | null>(null);
+  const [withdrawing, setWithdrawing]       = useState(false);
+  const withdrawFileRef                     = useRef<HTMLInputElement | null>(null);
+  const [withdrawals, setWithdrawals]       = useState<any[]>([]);
+
   // Fetch campaign from API
   useEffect(() => {
     let cancelled = false;
@@ -175,6 +186,14 @@ export default function CampaignDetailPage() {
     }
   }, [data?.campaign.status, orgTab, orgSearch, orgTypeFilter, geoFilter, orgPage, loadOrgs]);
 
+  // Load withdrawals for milestone-aware display (creator needs this to compute next eligible)
+  useEffect(() => {
+    if (!data?.campaign.id) return;
+    fetch(`/api/withdrawal-requests?campaignId=${data.campaign.id}`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows) => setWithdrawals(Array.isArray(rows) ? rows : []));
+  }, [data?.campaign.id]);
+
   // Request verification from org
   const handleRequestVerification = async (orgId: string) => {
     setRequestingOrg(orgId);
@@ -202,30 +221,99 @@ export default function CampaignDetailPage() {
     }
   };
 
-  // Re-analyze with new documents
+  // Creator withdrawal request
+  const handleCreatorWithdraw = async () => {
+    if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) { toast.error('Enter a valid amount'); return; }
+    if (!withdrawDesc.trim()) { toast.error('Describe what you accomplished'); return; }
+    if (!withdrawFile) { toast.error('Upload a proof document'); return; }
+    if (!data?.campaign.contract_id) { toast.error('Publish campaign on-chain first'); return; }
+
+    setWithdrawing(true);
+    const tid = 'wr-' + campaignId;
+    try {
+      toast.loading('Uploading proof…', { id: tid });
+      const form = new FormData();
+      form.append('file', withdrawFile);
+      const up = await fetch('/api/upload', { method: 'POST', body: form });
+      if (!up.ok) throw new Error('Upload failed');
+      const proofCid: string = (await up.json()).cid;
+
+      let contractRequestId: number | null = null;
+      if (contract) {
+        toast.loading('Confirm transaction in MetaMask…', { id: tid });
+        const amountWei = ethers.parseEther(withdrawAmount);
+        const tx = await contract.submitWithdrawalRequest(data.campaign.contract_id, amountWei, proofCid);
+        toast.loading('Waiting for confirmation…', { id: tid });
+        const receipt = await tx.wait();
+        for (const log of receipt.logs ?? []) {
+          try {
+            const parsed = contract.interface.parseLog(log);
+            if (parsed?.name === 'WithdrawalRequested') { contractRequestId = Number(parsed.args[1]); break; }
+          } catch { /* skip */ }
+        }
+      }
+
+      toast.loading('Saving request…', { id: tid });
+      const res = await fetch('/api/withdrawal-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaign_id:          campaignId,
+          milestone_id:         nextEligibleMilestone?.id,
+          contract_request_id:  contractRequestId,
+          requested_amount_eth: parseFloat(withdrawAmount),
+          proof_ipfs_hash:      proofCid,
+          proof_description:    withdrawDesc.trim(),
+          status:               'pending',
+        }),
+      });
+      if (!res.ok) throw new Error('Failed to save request');
+
+      toast.success('Withdrawal request submitted — admin will review it', { id: tid });
+      setWithdrawOpen(false);
+      setWithdrawAmount('');
+      setWithdrawDesc('');
+      setWithdrawFile(null);
+    } catch (err) {
+      toast.error(parseContractError(err), { id: tid });
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
+  // Re-analyze with new documents — upload files first, then send CIDs
   const handleReanalyze = async () => {
     if (!resubmitFiles.length) return;
     setReanalyzing(true);
+    const tid = 'reanalyze-' + campaignId;
     try {
-      const formData = new FormData();
-      resubmitFiles.forEach((f) => formData.append('documents', f));
+      toast.loading('Uploading documents…', { id: tid });
+      const cids = await Promise.all(resubmitFiles.map(async (file) => {
+        const form = new FormData();
+        form.append('file', file);
+        const up = await fetch('/api/upload', { method: 'POST', body: form });
+        if (!up.ok) throw new Error('Upload failed');
+        return (await up.json()).cid as string;
+      }));
+
+      toast.loading('Re-running AI analysis…', { id: tid });
       const res = await fetch(`/api/campaigns/${campaignId}/resubmit`, {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentIpfsCids: cids }),
       });
       if (!res.ok) {
         const err = await res.json();
-        toast.error(err.error ?? 'Re-analysis failed');
+        toast.error(err.error ?? 'Re-analysis failed', { id: tid });
         return;
       }
       const updated = await res.json();
-      toast.success(`Re-analysis complete! New score: ${updated.ai_trust_score}`);
+      toast.success(`Re-analysis complete! New score: ${updated.ai_trust_score}`, { id: tid });
       setResubmitFiles([]);
-      // Refresh campaign data
       const refreshed = await fetch(`/api/campaigns/${campaignId}`);
       if (refreshed.ok) setData(await refreshed.json());
-    } catch {
-      toast.error('Re-analysis failed');
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Re-analysis failed', { id: tid });
     } finally {
       setReanalyzing(false);
     }
@@ -249,10 +337,61 @@ export default function CampaignDetailPage() {
     }
   };
 
+  // Publish unpublished campaign on-chain (creator only)
+  const [publishing, setPublishing] = useState(false);
+  const handlePublishOnChain = async () => {
+    if (!contract) { toast.error('Connect your wallet first'); return; }
+    if (!data?.campaign) return;
+    const { campaign } = data;
+
+    setPublishing(true);
+    const ptid = 'publish-' + campaignId;
+    try {
+      toast.loading('Confirm transaction in MetaMask…', { id: ptid });
+      const targetWei = ethers.parseEther(campaign.target_amount_eth.toString());
+      const deadlineDate = campaign.deadline ? new Date(campaign.deadline) : new Date(Date.now() + 30 * 86400000);
+      const daysLeft = Math.max(1, Math.ceil((deadlineDate.getTime() - Date.now()) / 86400000));
+      const ipfsHash = campaign.ipfs_metadata_hash ?? 'QmNone';
+
+      const tx      = await contract.createCampaign(targetWei, daysLeft, ipfsHash);
+      toast.loading('Waiting for confirmation…', { id: ptid });
+      const receipt = await tx.wait();
+
+      // Parse contractId from CampaignCreated event
+      let contractId: number | null = null;
+      for (const log of receipt.logs ?? []) {
+        try {
+          const parsed = contract.interface.parseLog(log);
+          if (parsed?.name === 'CampaignCreated') {
+            contractId = Number(parsed.args[0]);
+            break;
+          }
+        } catch { /* skip */ }
+      }
+
+      await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contractId }),
+      });
+
+      toast.success('Campaign published on blockchain!', { id: ptid });
+      window.location.reload();
+    } catch (err) {
+      toast.error(parseContractError(err), { id: ptid });
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   // Donate
   const handleDonate = async () => {
-    if (!isConnected || !contract) {
+    if (!isConnected || !account) {
       toast.error('Connect your wallet first');
+      return;
+    }
+    if (!contract) {
+      toast.error('Contract not available — make sure Hardhat node is running and the contract address is correct');
       return;
     }
     if (!data?.campaign.contract_id) {
@@ -265,12 +404,13 @@ export default function CampaignDetailPage() {
     }
 
     setDonating(true);
+    const dtid = 'donate-' + campaignId;
     try {
-      toast.loading('Confirm in MetaMask…');
+      toast.loading('Confirm in MetaMask…', { id: dtid });
       const amountWei = ethers.parseEther(amount);
       const tx        = await contract.donate(data.campaign.contract_id, { value: amountWei });
 
-      toast.loading('Waiting for confirmation…');
+      toast.loading('Waiting for confirmation…', { id: dtid });
       const receipt = await tx.wait();
 
       // Record donation in Supabase
@@ -286,7 +426,7 @@ export default function CampaignDetailPage() {
         }),
       });
 
-      toast.success('Donation confirmed!');
+      toast.success('Donation confirmed!', { id: dtid });
       setAmount('');
 
       // Refresh data
@@ -297,8 +437,7 @@ export default function CampaignDetailPage() {
       const updated = await contract.getCampaign(data.campaign.contract_id);
       setOnChainRaised(Number(ethers.formatEther(updated.amountRaised)));
     } catch (err) {
-      console.error(err);
-      toast.error('Donation failed');
+      toast.error(parseContractError(err), { id: dtid });
     } finally {
       setDonating(false);
     }
@@ -344,7 +483,17 @@ export default function CampaignDetailPage() {
     (account?.toLowerCase() === campaign.creator_wallet.toLowerCase()) ||
     (!!dbUser?.wallet_address && dbUser.wallet_address.toLowerCase() === campaign.creator_wallet.toLowerCase())
   );
-  const canDonate     = campaign.status === 'active' || campaign.status === 'funded';
+  const canDonate = campaign.status === 'active';
+
+  // Compute next eligible milestone for withdrawal
+  const totalWithdrawn = withdrawals
+    .filter((w: any) => w.status === 'approved')
+    .reduce((s: number, w: any) => s + Number(w.requested_amount_eth), 0);
+  const availableBalance = (campaign.current_amount_eth ?? 0) - totalWithdrawn;
+  const nextEligibleMilestone = milestones.find((m, i) => {
+    if (m.status !== 'pending') return false;
+    return milestones.slice(0, i).every((p) => p.status === 'released');
+  });
   const needsVerification = isCreator && campaign.status === 'pending_verification';
   const needsMoreProof    = isCreator && campaign.status === 'needs_more_proof';
   const sepoliaBase   = 'https://sepolia.etherscan.io';
@@ -614,25 +763,34 @@ export default function CampaignDetailPage() {
                   {milestones.length === 0 ? (
                     <Alert><AlertDescription>No milestones defined.</AlertDescription></Alert>
                   ) : (
-                    milestones.map((m, i) => (
-                      <Card key={m.id} className="p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-start gap-3">
-                            <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-sm font-medium flex-shrink-0">
-                              {i + 1}
+                    milestones.map((m, i) => {
+                      const isLocked = milestones.slice(0, i).some((p) => p.status !== 'released');
+                      const statusInfo = (() => {
+                        if (m.status === 'released')             return { label: 'Released',  cls: 'bg-success text-success-foreground' };
+                        if (m.status === 'withdrawal_requested') return { label: 'In Review', cls: 'bg-warning text-warning-foreground' };
+                        if (isLocked)                            return { label: 'Locked',    cls: 'bg-muted text-muted-foreground' };
+                        return { label: 'Eligible', cls: 'bg-primary/20 text-primary' };
+                      })();
+                      return (
+                        <Card key={m.id} className={`p-4 ${isLocked && m.status === 'pending' ? 'opacity-60' : ''}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-3">
+                              <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-sm font-medium flex-shrink-0">
+                                {m.status === 'released' ? <CheckCircle className="w-4 h-4 text-success" /> : i + 1}
+                              </div>
+                              <div>
+                                <p className="font-medium text-sm">{m.title}</p>
+                                <p className="text-sm text-muted-foreground mt-0.5">{m.description}</p>
+                                <p className="text-sm font-medium mt-1">{m.target_amount_eth} ETH</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="font-medium text-sm">{m.title}</p>
-                              <p className="text-sm text-muted-foreground mt-0.5">{m.description}</p>
-                              <p className="text-sm font-medium mt-1">{m.target_amount_eth} ETH</p>
-                            </div>
+                            <Badge className={statusInfo.cls} variant="secondary">
+                              {statusInfo.label}
+                            </Badge>
                           </div>
-                          <Badge className={milestoneStatusClass(m.status)} variant="secondary">
-                            {m.status.replace(/_/g, ' ')}
-                          </Badge>
-                        </div>
-                      </Card>
-                    ))
+                        </Card>
+                      );
+                    })
                   )}
                 </TabsContent>
 
@@ -736,6 +894,31 @@ export default function CampaignDetailPage() {
                     </div>
                   </div>
 
+                  {/* Publish on-chain banner — creator only, when contract_id is missing */}
+                  {isCreator && !campaign.contract_id && canDonate && (
+                    <Alert className="border-primary bg-primary/10">
+                      <AlertCircle className="w-4 h-4" />
+                      <AlertDescription className="space-y-3">
+                        <p className="text-sm font-medium">This campaign is approved but not yet registered on-chain.</p>
+                        <p className="text-xs text-muted-foreground">
+                          One MetaMask transaction is required to create the escrow entry before donors can contribute.
+                        </p>
+                        <Button
+                          size="sm"
+                          className="w-full gap-2"
+                          disabled={publishing || !contract}
+                          onClick={handlePublishOnChain}
+                        >
+                          {publishing ? (
+                            <><Loader className="w-3.5 h-3.5 animate-spin" /> Publishing…</>
+                          ) : (
+                            <><Rocket className="w-3.5 h-3.5" /> Publish on Blockchain</>
+                          )}
+                        </Button>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
                   {/* Status alerts */}
                   {campaign.status === 'pending_verification' && (
                     <Alert className="border-warning bg-warning/10">
@@ -765,17 +948,33 @@ export default function CampaignDetailPage() {
                     </Alert>
                   )}
 
+                  {campaign.status === 'funded' && (
+                    <Alert className="bg-success/10 border-success">
+                      <CheckCircle className="w-4 h-4 text-success" />
+                      <AlertDescription className="text-sm font-medium">
+                        Goal reached! This campaign is fully funded.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
                   {/* Donation input */}
                   {canDonate && (
                     <>
-                      {!isConnected && (
+                      {!isConnected ? (
                         <Alert className="border-warning bg-warning/10">
                           <AlertCircle className="w-4 h-4" />
                           <AlertDescription className="text-sm">
                             Connect your wallet to donate.
                           </AlertDescription>
                         </Alert>
-                      )}
+                      ) : !contract ? (
+                        <Alert className="border-warning bg-warning/10">
+                          <AlertCircle className="w-4 h-4" />
+                          <AlertDescription className="text-sm">
+                            Wallet connected but contract not reachable. Make sure MetaMask is on the correct network (localhost:8545 for local dev, Polygon Amoy for testnet).
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
 
                       <div className="space-y-3">
                         <label className="text-sm font-medium">Amount (ETH)</label>
@@ -805,7 +1004,7 @@ export default function CampaignDetailPage() {
 
                       <Button
                         onClick={handleDonate}
-                        disabled={!isConnected || donating || !amount}
+                        disabled={!isConnected || !contract || donating || !amount}
                         size="lg"
                         className="w-full gap-2"
                       >
@@ -816,13 +1015,6 @@ export default function CampaignDetailPage() {
                         )}
                       </Button>
                     </>
-                  )}
-
-                  {pct >= 100 && (
-                    <Alert className="bg-success/10 border-success">
-                      <CheckCircle className="w-4 h-4" />
-                      <AlertDescription>This campaign has reached its goal!</AlertDescription>
-                    </Alert>
                   )}
 
                   {/* Trust info */}
@@ -851,6 +1043,112 @@ export default function CampaignDetailPage() {
                   </div>
                 </CardContent>
               </Card>
+              {/* Creator withdrawal card — show when campaign is active or funded */}
+              {isCreator && (campaign.status === 'active' || campaign.status === 'funded') && (
+                <Card className="mt-4">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <ArrowRight className="w-4 h-4" />
+                      Request Withdrawal
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {!data?.campaign.contract_id ? (
+                      <p className="text-xs text-muted-foreground">
+                        Publish this campaign on-chain first (button above) before requesting withdrawals.
+                      </p>
+                    ) : !nextEligibleMilestone && milestones.length > 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No milestone is currently eligible. All are locked, in review, or released.
+                      </p>
+                    ) : nextEligibleMilestone && availableBalance < nextEligibleMilestone.target_amount_eth ? (
+                      <p className="text-xs text-muted-foreground">
+                        Next milestone: <strong>{nextEligibleMilestone.title}</strong> ({nextEligibleMilestone.target_amount_eth} ETH).
+                        Available balance: {availableBalance.toFixed(4)} ETH — more donations needed.
+                      </p>
+                    ) : !withdrawOpen ? (
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => {
+                          setWithdrawOpen(true);
+                          if (nextEligibleMilestone) {
+                            setWithdrawAmount(nextEligibleMilestone.target_amount_eth.toString());
+                          }
+                        }}
+                      >
+                        {nextEligibleMilestone
+                          ? `Request: ${nextEligibleMilestone.title}`
+                          : 'Request Withdrawal'}
+                      </Button>
+                    ) : (
+                      <div className="space-y-3">
+                        {nextEligibleMilestone && (
+                          <div className="flex items-center gap-2 p-2 bg-muted/50 rounded text-xs">
+                            <CheckCircle className="w-3.5 h-3.5 text-success flex-shrink-0" />
+                            <span className="text-muted-foreground">Milestone:</span>
+                            <span className="font-medium">{nextEligibleMilestone.title}</span>
+                          </div>
+                        )}
+                        <div>
+                          <label className="text-xs font-medium">Amount (ETH)</label>
+                          <Input
+                            type="number" placeholder="0.5" step="0.01" min="0.001"
+                            value={withdrawAmount}
+                            onChange={(e) => setWithdrawAmount(e.target.value)}
+                            disabled={withdrawing}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium">What did you accomplish?</label>
+                          <Textarea
+                            placeholder="Describe the milestone completed and how funds were used"
+                            value={withdrawDesc}
+                            onChange={(e) => setWithdrawDesc(e.target.value)}
+                            rows={3}
+                            disabled={withdrawing}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium">Proof document</label>
+                          <input
+                            ref={withdrawFileRef}
+                            type="file"
+                            accept=".pdf,.jpg,.jpeg,.png,.webp"
+                            className="hidden"
+                            onChange={(e) => setWithdrawFile(e.target.files?.[0] ?? null)}
+                          />
+                          <Button
+                            variant="outline" size="sm" className="w-full gap-2 mt-1"
+                            onClick={() => withdrawFileRef.current?.click()}
+                            disabled={withdrawing}
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            {withdrawFile ? withdrawFile.name : 'Upload proof (PDF/image)'}
+                          </Button>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline" size="sm" className="flex-1"
+                            onClick={() => setWithdrawOpen(false)}
+                            disabled={withdrawing}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm" className="flex-1 gap-2"
+                            onClick={handleCreatorWithdraw}
+                            disabled={withdrawing}
+                          >
+                            {withdrawing ? <Loader className="w-3.5 h-3.5 animate-spin" /> : null}
+                            Submit
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
             </div>
 
           </div>

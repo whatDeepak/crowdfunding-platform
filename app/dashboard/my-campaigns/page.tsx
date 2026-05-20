@@ -11,13 +11,12 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useWeb3 } from '@/lib/web3-context';
 import { toast } from 'sonner';
 import { ethers } from 'ethers';
 import {
   Loader, Plus, ArrowRight, AlertCircle, FileText,
-  Upload, CheckCircle, ChevronDown, ChevronUp, ExternalLink, RefreshCw, X, Building2, Send,
+  Upload, CheckCircle, ChevronDown, ChevronUp, ExternalLink, RefreshCw, X, Building2, Send, Lock, Trash2,
 } from 'lucide-react';
 import type { DbCampaign, DbMilestone, DbWithdrawalRequest, DbOrganization } from '@/lib/types';
 
@@ -132,22 +131,23 @@ export default function MyCampaignsPage() {
     }
 
     setSubmitting(campaign.id);
+    const tid = 'withdraw-' + campaign.id;
     try {
       // 1. Upload proof to IPFS
-      toast.loading('Uploading proof document…');
+      toast.loading('Uploading proof document…', { id: tid });
       const proofCid = await uploadFile(f.proofFile);
 
       // 2. Submit on-chain (if contract_id is set)
       let contractRequestId: number | null = null;
       if (contract && campaign.contract_id != null) {
-        toast.loading('Confirm transaction in MetaMask…');
+        toast.loading('Confirm transaction in MetaMask…', { id: tid });
         const amountWei = ethers.parseEther(f.amount);
         const tx = await contract.submitWithdrawalRequest(
           campaign.contract_id,
           amountWei,
           proofCid
         );
-        toast.loading('Waiting for confirmation…');
+        toast.loading('Waiting for confirmation…', { id: tid });
         const receipt = await tx.wait();
 
         // Parse request ID from WithdrawalRequested event
@@ -163,7 +163,7 @@ export default function MyCampaignsPage() {
       }
 
       // 3. Create DB record
-      toast.loading('Saving withdrawal request…');
+      toast.loading('Saving withdrawal request…', { id: tid });
       const res = await fetch('/api/withdrawal-requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -187,7 +187,7 @@ export default function MyCampaignsPage() {
         body: JSON.stringify({ withdrawalRequestId: wr.id }),
       }).catch(() => {/* fire and forget */});
 
-      toast.success('Withdrawal request submitted for admin review!');
+      toast.success('Withdrawal request submitted for admin review!', { id: tid });
       setShowWithdraw(null);
 
       // Refresh detail
@@ -203,9 +203,92 @@ export default function MyCampaignsPage() {
         };
       });
     } catch (err: any) {
-      toast.error(err?.shortMessage ?? err?.message ?? 'Submission failed');
+      toast.error(err?.shortMessage ?? err?.message ?? 'Submission failed', { id: tid });
     } finally {
       setSubmitting(null);
+    }
+  };
+
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const handleDeleteCampaign = async (campaignId: string) => {
+    if (!window.confirm('Delete this campaign? This cannot be undone.')) return;
+    setDeleting(campaignId);
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error ?? 'Failed to delete campaign');
+        return;
+      }
+      toast.success('Campaign deleted');
+      setCampaigns((prev) => prev.filter((c) => c.id !== campaignId));
+      setDetails((prev) => { const next = { ...prev }; delete next[campaignId]; return next; });
+    } catch {
+      toast.error('Failed to delete campaign');
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  // Submit an existing withdrawal request on-chain (for requests saved without contract_request_id)
+  const [submittingOnChain, setSubmittingOnChain] = useState<string | null>(null);
+  const handleSubmitOnChain = async (campaign: DbCampaign, w: DbWithdrawalRequest) => {
+    if (!contract || campaign.contract_id == null) {
+      toast.error('Campaign is not published on-chain yet');
+      return;
+    }
+    setSubmittingOnChain(w.id);
+    const tid = 'onchain-' + w.id;
+    try {
+      toast.loading('Confirm transaction in MetaMask…', { id: tid });
+      const amountWei = ethers.parseEther(w.requested_amount_eth.toString());
+      const tx = await contract.submitWithdrawalRequest(
+        campaign.contract_id,
+        amountWei,
+        w.proof_ipfs_hash ?? ''
+      );
+      toast.loading('Waiting for confirmation…', { id: tid });
+      const receipt = await tx.wait();
+
+      let contractRequestId: number | null = null;
+      for (const log of receipt.logs ?? []) {
+        try {
+          const parsed = contract.interface.parseLog(log);
+          if (parsed?.name === 'WithdrawalRequested') {
+            contractRequestId = Number(parsed.args[1]);
+            break;
+          }
+        } catch { /* skip */ }
+      }
+
+      if (contractRequestId == null) throw new Error('Could not read request ID from transaction');
+
+      await fetch(`/api/withdrawal-requests/${w.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract_request_id: contractRequestId }),
+      });
+
+      toast.success('Withdrawal submitted on-chain — admin can now approve it', { id: tid });
+      // Update local state
+      setDetails((prev) => {
+        const d = prev[campaign.id];
+        if (!d) return prev;
+        return {
+          ...prev,
+          [campaign.id]: {
+            ...d,
+            withdrawals: d.withdrawals.map((wr) =>
+              wr.id === w.id ? { ...wr, contract_request_id: contractRequestId } : wr
+            ),
+          },
+        };
+      });
+    } catch (err: any) {
+      toast.error(err?.shortMessage ?? err?.message ?? 'Transaction failed', { id: tid });
+    } finally {
+      setSubmittingOnChain(null);
     }
   };
 
@@ -217,11 +300,12 @@ export default function MyCampaignsPage() {
     }
 
     setResubmitting(campaign.id);
+    const rtid = 'resubmit-' + campaign.id;
     try {
-      toast.loading('Uploading documents…');
+      toast.loading('Uploading documents…', { id: rtid });
       const cids = await Promise.all(files.map(uploadFile));
 
-      toast.loading('Re-running AI analysis…');
+      toast.loading('Re-running AI analysis…', { id: rtid });
       const res = await fetch(`/api/campaigns/${campaign.id}/resubmit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -230,7 +314,7 @@ export default function MyCampaignsPage() {
 
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? 'Re-analysis failed');
+        toast.error(data.error ?? 'Re-analysis failed', { id: rtid });
         return;
       }
 
@@ -239,7 +323,8 @@ export default function MyCampaignsPage() {
           ? 'Your campaign is now live!'
           : data.campaign_status === 'pending_verification'
           ? 'Score improved — awaiting verifier endorsement'
-          : 'Analysis complete. Check your updated score.'
+          : 'Analysis complete. Check your updated score.',
+        { id: rtid }
       );
 
       // Refresh campaign list
@@ -252,7 +337,7 @@ export default function MyCampaignsPage() {
           .finally(() => setLoading(false));
       }
     } catch (err: any) {
-      toast.error(err?.message ?? 'Re-analysis failed');
+      toast.error(err?.message ?? 'Re-analysis failed', { id: rtid });
     } finally {
       setResubmitting(null);
     }
@@ -260,11 +345,11 @@ export default function MyCampaignsPage() {
 
   const loadMatchingOrgs = async (campaign: DbCampaign) => {
     if (matchingOrgs[campaign.id]) return;
-    const res = await fetch(`/api/organizations?status=active`);
+    const res = await fetch(`/api/organizations?status=active&domain=${campaign.category}&per_page=20`);
     if (!res.ok) return;
-    const all: DbOrganization[] = await res.json();
-    const filtered = all.filter((o) => o.domains.includes(campaign.category));
-    setMatchingOrgs((prev) => ({ ...prev, [campaign.id]: filtered }));
+    const json = await res.json();
+    const orgs: DbOrganization[] = json.orgs ?? [];
+    setMatchingOrgs((prev) => ({ ...prev, [campaign.id]: orgs }));
   };
 
   const handleRequestVerification = async (campaign: DbCampaign, orgId: string) => {
@@ -337,7 +422,8 @@ export default function MyCampaignsPage() {
                 : 0;
               const isOpen   = expanded === c.id;
               const detail   = details[c.id];
-              const canWithdraw = (c.status === 'active' || c.status === 'funded') && c.contract_id != null;
+              const canWithdraw = c.status === 'active' || c.status === 'funded';
+              const isDeletable = c.contract_id == null && ['pending_ai', 'pending_verification', 'pending_review', 'needs_more_proof', 'rejected'].includes(c.status);
 
               return (
                 <Card key={c.id}>
@@ -366,6 +452,19 @@ export default function MyCampaignsPage() {
                             <ExternalLink className="w-4 h-4" />
                           </Link>
                         </Button>
+                        {isDeletable && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            disabled={deleting === c.id}
+                            onClick={() => handleDeleteCampaign(c.id)}
+                          >
+                            {deleting === c.id
+                              ? <Loader className="w-4 h-4 animate-spin" />
+                              : <Trash2 className="w-4 h-4" />}
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -385,63 +484,224 @@ export default function MyCampaignsPage() {
                         </div>
                       ) : (
                         <>
-                          {/* Milestones */}
-                          {detail.milestones.length > 0 && (
-                            <div>
-                              <p className="text-sm font-medium mb-2">Milestones</p>
-                              <div className="space-y-2">
-                                {detail.milestones.map((m, i) => (
-                                  <div
-                                    key={m.id}
-                                    className="flex items-center justify-between p-2.5 bg-muted/40 rounded-lg text-sm"
-                                  >
-                                    <span className="font-medium">{i + 1}. {m.title}</span>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-muted-foreground">{m.target_amount_eth} ETH</span>
-                                      <Badge className="text-xs" variant="outline">
-                                        {m.status.replace(/_/g, ' ')}
-                                      </Badge>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                          {/* Milestones — status-aware display */}
+                          {detail.milestones.length > 0 && (() => {
+                            const totalWithdrawn = detail.withdrawals
+                              .filter((w) => w.status === 'approved')
+                              .reduce((s, w) => s + Number(w.requested_amount_eth), 0);
+                            const availableBalance = c.current_amount_eth - totalWithdrawn;
 
-                          {/* Past withdrawals */}
+                            const nextEligibleMilestone = detail.milestones.find((m, i) => {
+                              if (m.status !== 'pending') return false;
+                              return detail.milestones.slice(0, i).every((p) => p.status === 'released');
+                            });
+
+                            const canRequestWithdrawal =
+                              canWithdraw &&
+                              c.contract_id != null &&
+                              nextEligibleMilestone != null &&
+                              availableBalance >= (nextEligibleMilestone.target_amount_eth ?? Infinity);
+
+                            return (
+                              <div>
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-sm font-medium">Milestones</p>
+                                  {canWithdraw && c.contract_id != null && (
+                                    <span className="text-xs text-muted-foreground">
+                                      Available: {availableBalance.toFixed(4)} ETH
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="space-y-2">
+                                  {detail.milestones.map((m, i) => {
+                                    const isLocked = detail.milestones.slice(0, i).some((p) => p.status !== 'released');
+                                    const milestoneStatusInfo = (() => {
+                                      if (m.status === 'released')             return { label: 'Released',   cls: 'bg-success text-success-foreground' };
+                                      if (m.status === 'withdrawal_requested') return { label: 'In Review',  cls: 'bg-warning text-warning-foreground' };
+                                      if (isLocked)                            return { label: 'Locked',     cls: 'bg-muted text-muted-foreground' };
+                                      return { label: 'Eligible', cls: 'bg-primary/20 text-primary' };
+                                    })();
+                                    return (
+                                      <div
+                                        key={m.id}
+                                        className="flex items-center justify-between p-2.5 bg-muted/40 rounded-lg text-sm"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          {isLocked && m.status === 'pending' && (
+                                            <Lock className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                                          )}
+                                          <span className="font-medium">{i + 1}. {m.title}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-muted-foreground">{m.target_amount_eth} ETH</span>
+                                          <Badge className={`text-xs ${milestoneStatusInfo.cls}`}>
+                                            {milestoneStatusInfo.label}
+                                          </Badge>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                {/* Withdrawal button — milestone-aware */}
+                                {canWithdraw && (
+                                  <div className="mt-3">
+                                    {c.contract_id == null ? (
+                                      <Alert className="border-warning bg-warning/10">
+                                        <AlertCircle className="w-4 h-4" />
+                                        <AlertDescription className="text-xs">
+                                          Publish this campaign on-chain first before requesting a withdrawal.{' '}
+                                          <Link href={`/campaigns/${c.id}`} className="underline font-medium">
+                                            Go to campaign page →
+                                          </Link>
+                                        </AlertDescription>
+                                      </Alert>
+                                    ) : !nextEligibleMilestone ? (
+                                      <p className="text-xs text-muted-foreground text-center py-2">
+                                        No eligible milestones — all are locked, in review, or released.
+                                      </p>
+                                    ) : !canRequestWithdrawal ? (
+                                      <Alert className="border-warning bg-warning/10">
+                                        <AlertCircle className="w-4 h-4" />
+                                        <AlertDescription className="text-xs">
+                                          Available balance ({availableBalance.toFixed(4)} ETH) is less than the next milestone amount ({nextEligibleMilestone.target_amount_eth} ETH).
+                                          More donations are needed.
+                                        </AlertDescription>
+                                      </Alert>
+                                    ) : showWithdraw === c.id ? (
+                                      <WithdrawForm
+                                        campaign={c}
+                                        milestones={detail.milestones}
+                                        nextMilestone={nextEligibleMilestone}
+                                        form={getWForm(c.id)}
+                                        onChange={(patch) => setWField(c.id, patch)}
+                                        onSubmit={() => handleWithdrawSubmit(c)}
+                                        onCancel={() => setShowWithdraw(null)}
+                                        submitting={submitting === c.id}
+                                        fileInputRef={fileInputRef}
+                                      />
+                                    ) : (
+                                      <Button
+                                        variant="outline"
+                                        onClick={() => {
+                                          setShowWithdraw(c.id);
+                                          setWField(c.id, {
+                                            milestoneId: nextEligibleMilestone.id,
+                                            amount:      nextEligibleMilestone.target_amount_eth.toString(),
+                                          });
+                                        }}
+                                        className="w-full gap-2"
+                                      >
+                                        <ArrowRight className="w-4 h-4" />
+                                        Request Withdrawal for: {nextEligibleMilestone.title}
+                                      </Button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+
+                          {/* Past withdrawals (when no milestones exist) */}
                           {detail.withdrawals.length > 0 && (
                             <div>
                               <p className="text-sm font-medium mb-2">Withdrawal Requests</p>
                               <div className="space-y-2">
-                                {detail.withdrawals.map((w) => (
-                                  <div
-                                    key={w.id}
-                                    className="flex items-center justify-between p-2.5 border rounded-lg text-sm"
-                                  >
-                                    <span>{w.proof_description?.slice(0, 40) ?? 'Request'}…</span>
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-medium">{w.requested_amount_eth} ETH</span>
-                                      <Badge
-                                        variant="secondary"
-                                        className={
-                                          w.status === 'approved' ? 'bg-success text-success-foreground' :
-                                          w.status === 'rejected' ? 'bg-destructive text-destructive-foreground' :
-                                          ''
-                                        }
-                                      >
-                                        {w.status}
-                                      </Badge>
+                                {detail.withdrawals.map((w) => {
+                                  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? '31337');
+                                  const explorerBase = chainId === 80002
+                                    ? 'https://amoy.polygonscan.com'
+                                    : chainId === 11155111
+                                    ? 'https://sepolia.etherscan.io'
+                                    : null;
+
+                                  return (
+                                    <div
+                                      key={w.id}
+                                      className="flex flex-col gap-1.5 p-2.5 border rounded-lg text-sm"
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <span className="truncate text-muted-foreground">{w.proof_description?.slice(0, 40) ?? 'Request'}…</span>
+                                        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                                          <span className="font-medium">{w.requested_amount_eth} ETH</span>
+                                          <Badge
+                                            variant="secondary"
+                                            className={
+                                              w.status === 'approved' ? 'bg-success text-success-foreground' :
+                                              w.status === 'rejected' ? 'bg-destructive text-destructive-foreground' :
+                                              ''
+                                            }
+                                          >
+                                            {w.status}
+                                          </Badge>
+                                        </div>
+                                      </div>
+
+                                      {/* Approved: show release confirmation */}
+                                      {w.status === 'approved' && (
+                                        <div className="flex items-center gap-1.5 text-xs text-success">
+                                          <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                                          <span>ETH released to your wallet</span>
+                                          {w.admin_tx_hash && explorerBase && (
+                                            <a
+                                              href={`${explorerBase}/tx/${w.admin_tx_hash}`}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="inline-flex items-center gap-0.5 text-primary underline ml-1"
+                                            >
+                                              tx <ExternalLink className="w-2.5 h-2.5" />
+                                            </a>
+                                          )}
+                                          {w.admin_tx_hash && !explorerBase && (
+                                            <span className="text-muted-foreground ml-1 font-mono">
+                                              {w.admin_tx_hash.slice(0, 10)}…
+                                            </span>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {/* Rejected: show reason */}
+                                      {w.status === 'rejected' && w.rejection_reason && (
+                                        <p className="text-xs text-destructive">{w.rejection_reason}</p>
+                                      )}
+
+                                      {/* Pending without on-chain ID: prompt to submit */}
+                                      {w.status === 'pending' && w.contract_request_id == null && c.contract_id != null && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="w-full gap-1.5 border-warning text-warning hover:bg-warning/10"
+                                          disabled={submittingOnChain === w.id}
+                                          onClick={() => handleSubmitOnChain(c, w)}
+                                        >
+                                          {submittingOnChain === w.id
+                                            ? <Loader className="w-3.5 h-3.5 animate-spin" />
+                                            : <Send className="w-3.5 h-3.5" />
+                                          }
+                                          Submit On-Chain (required for admin approval)
+                                        </Button>
+                                      )}
                                     </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             </div>
                           )}
 
-                          {/* Withdrawal request button */}
-                          {canWithdraw && (
+                          {/* Withdrawal button shown inline with milestones above — only show standalone when no milestones */}
+                          {canWithdraw && detail.milestones.length === 0 && (
                             <div>
-                              {showWithdraw === c.id ? (
+                              {c.contract_id == null ? (
+                                <Alert className="border-warning bg-warning/10">
+                                  <AlertCircle className="w-4 h-4" />
+                                  <AlertDescription className="text-xs">
+                                    Publish this campaign on-chain first before requesting a withdrawal.{' '}
+                                    <Link href={`/campaigns/${c.id}`} className="underline font-medium">
+                                      Go to campaign page →
+                                    </Link>
+                                  </AlertDescription>
+                                </Alert>
+                              ) : showWithdraw === c.id ? (
                                 <WithdrawForm
                                   campaign={c}
                                   milestones={detail.milestones}
@@ -459,7 +719,7 @@ export default function MyCampaignsPage() {
                                   className="w-full gap-2"
                                 >
                                   <ArrowRight className="w-4 h-4" />
-                                  Request Milestone Withdrawal
+                                  Request Withdrawal
                                 </Button>
                               )}
                             </div>
@@ -522,13 +782,14 @@ export default function MyCampaignsPage() {
 // ─── Withdrawal form sub-component ───────────────────────────────────────────
 
 interface WFormProps {
-  campaign:    DbCampaign;
-  milestones:  DbMilestone[];
-  form:        { milestoneId: string; amount: string; description: string; proofFile: File | null };
-  onChange:    (patch: any) => void;
-  onSubmit:    () => void;
-  onCancel:    () => void;
-  submitting:  boolean;
+  campaign:     DbCampaign;
+  milestones:   DbMilestone[];
+  nextMilestone?: DbMilestone;
+  form:         { milestoneId: string; amount: string; description: string; proofFile: File | null };
+  onChange:     (patch: any) => void;
+  onSubmit:     () => void;
+  onCancel:     () => void;
+  submitting:   boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
 }
 
@@ -794,34 +1055,17 @@ function NeedsMoreProofPanel({
 
 // ─── Withdrawal form sub-component ───────────────────────────────────────────
 
-function WithdrawForm({ campaign, milestones, form, onChange, onSubmit, onCancel, submitting, fileInputRef }: WFormProps) {
-  const pendingMilestones = milestones.filter((m) => m.status === 'pending');
-
+function WithdrawForm({ campaign, milestones, nextMilestone, form, onChange, onSubmit, onCancel, submitting, fileInputRef }: WFormProps) {
   return (
     <div className="border rounded-lg p-4 space-y-4 bg-muted/20">
       <p className="text-sm font-medium">Withdrawal Request</p>
 
-      {pendingMilestones.length > 0 && (
-        <div className="space-y-1">
-          <Label>Milestone (optional)</Label>
-          <Select
-            value={form.milestoneId}
-            onValueChange={(v) => {
-              const m = milestones.find((ms) => ms.id === v);
-              onChange({ milestoneId: v, amount: m ? m.target_amount_eth.toString() : form.amount });
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select milestone" />
-            </SelectTrigger>
-            <SelectContent>
-              {pendingMilestones.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.title} ({m.target_amount_eth} ETH)
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      {nextMilestone && (
+        <div className="flex items-center gap-2 p-2.5 bg-muted/50 rounded text-sm">
+          <CheckCircle className="w-3.5 h-3.5 text-success flex-shrink-0" />
+          <span className="text-muted-foreground">Milestone:</span>
+          <span className="font-medium">{nextMilestone.title}</span>
+          <span className="text-muted-foreground ml-auto">{nextMilestone.target_amount_eth} ETH</span>
         </div>
       )}
 

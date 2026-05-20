@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase-server';
 import { getCampaign, supabase } from '@/lib/supabase';
-import { uploadFileToPinata } from '@/lib/pinata';
 
 const RESUBMITTABLE_STATUSES = ['needs_more_proof', 'pending_verification', 'rejected'];
 const MAX_RESUBMISSIONS = 3;
@@ -53,23 +52,12 @@ export async function POST(
       );
     }
 
-    // Accept files via FormData
-    const form = await request.formData();
-    const files = form.getAll('documents').filter((f): f is File => f instanceof File);
+    // Client uploads files to Pinata first, then sends CIDs here
+    const body = await request.json().catch(() => ({}));
+    const docCids: string[] = Array.isArray(body.documentIpfsCids) ? body.documentIpfsCids : [];
 
-    if (files.length === 0) {
-      return NextResponse.json({ error: 'At least one document is required' }, { status: 400 });
-    }
-
-    // Upload each file to Pinata (graceful: skip failures)
-    const docCids: string[] = [];
-    for (const file of files) {
-      try {
-        const cid = await uploadFileToPinata(file);
-        docCids.push(cid);
-      } catch (err) {
-        console.warn(`Pinata upload failed for ${file.name}:`, err);
-      }
+    if (docCids.length === 0) {
+      return NextResponse.json({ error: 'At least one document CID is required' }, { status: 400 });
     }
 
     // Increment version

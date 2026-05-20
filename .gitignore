@@ -5,6 +5,8 @@
 /blockchain/node_modules
 /ai-service/venv
 /ai-service/__pycache__
+/crowdfunding-ai/venv
+/crowdfunding-ai/__pycache__
 
 # next.js
 /.next/

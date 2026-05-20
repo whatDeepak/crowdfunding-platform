@@ -1,12 +1,14 @@
-// Deploy CrowdfundingEscrow to local Hardhat node or Sepolia
+// Deploy CrowdfundingEscrow to local Hardhat node or Polygon Amoy testnet
 //
 // Usage:
-//   Local:   npx hardhat run scripts/deploy.js --network localhost
-//   Sepolia: npx hardhat run scripts/deploy.js --network sepolia
+//   Local: npx hardhat run scripts/deploy.js --network localhost
+//   Amoy:  npx hardhat run scripts/deploy.js --network amoy
 //
-// After deployment, copy the contract address into .env.local:
+// After deployment, copy the contract address into .env:
 //   NEXT_PUBLIC_CONTRACT_ADDRESS=0x...
 //   NEXT_PUBLIC_ADMIN_WALLET=<your deployer address, lowercase>
+//   NEXT_PUBLIC_CHAIN_ID=80002
+//   NEXT_PUBLIC_NETWORK_RPC_URL=https://rpc-amoy.polygon.technology
 
 const { ethers } = require('hardhat');
 

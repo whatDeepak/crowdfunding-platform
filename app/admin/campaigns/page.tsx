@@ -13,9 +13,10 @@ import { Progress } from '@/components/ui/progress';
 import { useWeb3 } from '@/lib/web3-context';
 import { useAuth } from '@/lib/auth-context';
 import { toast } from 'sonner';
+import { parseContractError } from '@/lib/utils';
 import {
   Loader, AlertCircle, CheckCircle, XCircle, Shield,
-  ChevronDown, ChevronUp, ExternalLink,
+  ChevronDown, ChevronUp, ExternalLink, Ban,
 } from 'lucide-react';
 import type { DbCampaign } from '@/lib/types';
 
@@ -41,6 +42,8 @@ export default function AdminCampaignsPage() {
       .catch(() => setCampaigns([]))
       .finally(() => setLoading(false));
   }, [isAdmin]);
+
+  const { contract } = useWeb3();
 
   const handleAction = async (campaign: DbCampaign, action: 'approve' | 'reject') => {
     const reason = reasons[campaign.id];
@@ -71,6 +74,41 @@ export default function AdminCampaignsPage() {
       setCampaigns((prev) => prev.filter((c) => c.id !== campaign.id));
     } catch (err: any) {
       toast.error(err.message);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const handleCancel = async (campaign: DbCampaign) => {
+    if (!contract) {
+      toast.error('Connect your MetaMask wallet first');
+      return;
+    }
+    if (campaign.contract_id == null) {
+      toast.error('This campaign has no on-chain record — update DB status directly');
+      return;
+    }
+
+    setActing(campaign.id);
+    try {
+      const tx = await contract.cancelCampaign(campaign.contract_id);
+      toast.info('Cancellation submitted — waiting for confirmation…');
+      const receipt = await tx.wait();
+
+      await fetch('/api/admin/cancel-campaign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaignId:  campaign.id,
+          adminWallet: wallet,
+          txHash:      receipt.hash,
+        }),
+      });
+
+      toast.success('Campaign cancelled on-chain');
+      setCampaigns((prev) => prev.filter((c) => c.id !== campaign.id));
+    } catch (err: any) {
+      toast.error(parseContractError(err));
     } finally {
       setActing(null);
     }
@@ -200,7 +238,7 @@ export default function AdminCampaignsPage() {
                             onChange={(e) => setReasons((prev) => ({ ...prev, [c.id]: e.target.value }))}
                             rows={2}
                           />
-                          <div className="flex gap-3">
+                          <div className="flex gap-3 flex-wrap">
                             <Button
                               onClick={() => handleAction(c, 'approve')}
                               disabled={isBusy}
@@ -227,6 +265,22 @@ export default function AdminCampaignsPage() {
                               Reject
                             </Button>
                           </div>
+                          {c.contract_id != null && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleCancel(c)}
+                              disabled={isBusy}
+                              className="w-full gap-2 border-destructive text-destructive hover:bg-destructive/10"
+                            >
+                              {isBusy ? (
+                                <Loader className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Ban className="w-3.5 h-3.5" />
+                              )}
+                              Cancel Campaign On-Chain
+                            </Button>
+                          )}
                         </div>
                       </CardContent>
                     )}

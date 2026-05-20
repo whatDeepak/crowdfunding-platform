@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useWeb3 } from '@/lib/web3-context';
 import { useAuth } from '@/lib/auth-context';
 import { toast } from 'sonner';
+import { parseContractError } from '@/lib/utils';
 import {
   Loader, AlertCircle, CheckCircle, XCircle,
   FileText, Shield, ExternalLink, ChevronDown, ChevronUp,
@@ -19,9 +20,12 @@ import {
 import type { DbWithdrawalRequest } from '@/lib/types';
 
 interface WithdrawalWithCampaign extends DbWithdrawalRequest {
-  campaign_title?: string;
-  campaign_category?: string;
-  contract_id?: number;
+  campaigns?: {
+    title?: string;
+    creator_wallet?: string;
+    category?: string;
+    contract_id?: number;
+  };
 }
 
 export default function AdminWithdrawalsPage() {
@@ -46,16 +50,22 @@ export default function AdminWithdrawalsPage() {
 
   const handleApprove = async (req: WithdrawalWithCampaign) => {
     if (!contract || !account) return;
-    if (!req.contract_request_id || !req.contract_id) {
-      toast.error('Missing on-chain IDs — cannot approve');
+    const campaignContractId = req.campaigns?.contract_id;
+    if (campaignContractId == null) {
+      toast.error('Campaign has no on-chain ID — the campaign must be published on blockchain first');
+      return;
+    }
+    if (!req.contract_request_id) {
+      toast.error('Withdrawal has no on-chain ID — the creator must submit the request via their dashboard (this calls submitWithdrawalRequest on the contract)');
       return;
     }
 
     setActing(req.id);
+    const tid = 'approve-' + req.id;
     try {
-      toast.loading('Confirm transaction in MetaMask…');
-      const tx = await contract.approveWithdrawal(req.contract_id, req.contract_request_id);
-      toast.loading('Waiting for confirmation…');
+      toast.loading('Confirm transaction in MetaMask…', { id: tid });
+      const tx = await contract.approveWithdrawal(campaignContractId, req.contract_request_id);
+      toast.loading('Waiting for confirmation…', { id: tid });
       const receipt = await tx.wait();
 
       // Record in DB
@@ -71,11 +81,10 @@ export default function AdminWithdrawalsPage() {
       });
       if (!res.ok) throw new Error('DB update failed');
 
-      toast.success(`Withdrawal approved — ${req.requested_amount_eth} ETH released`);
+      toast.success(`Withdrawal approved — ${req.requested_amount_eth} ETH released`, { id: tid });
       setRequests((prev) => prev.filter((r) => r.id !== req.id));
-    } catch (err: any) {
-      console.error(err);
-      toast.error(err?.shortMessage ?? err?.message ?? 'Transaction failed');
+    } catch (err) {
+      toast.error(parseContractError(err), { id: tid });
     } finally {
       setActing(null);
     }
@@ -86,12 +95,14 @@ export default function AdminWithdrawalsPage() {
     if (!reason) { toast.error('Enter a rejection reason'); return; }
     if (!account) return;
 
+    const campaignContractId = req.campaigns?.contract_id;
     setActing(req.id);
+    const tid = 'reject-' + req.id;
     try {
-      if (contract && req.contract_id != null && req.contract_request_id != null) {
-        toast.loading('Confirm rejection on chain…');
+      if (contract && campaignContractId != null && req.contract_request_id != null) {
+        toast.loading('Confirm rejection on chain…', { id: tid });
         const tx = await contract.rejectWithdrawal(
-          req.contract_id,
+          campaignContractId,
           req.contract_request_id,
           reason
         );
@@ -110,11 +121,10 @@ export default function AdminWithdrawalsPage() {
       });
       if (!res.ok) throw new Error('DB update failed');
 
-      toast.success('Withdrawal rejected');
+      toast.success('Withdrawal rejected', { id: tid });
       setRequests((prev) => prev.filter((r) => r.id !== req.id));
-    } catch (err: any) {
-      console.error(err);
-      toast.error(err?.shortMessage ?? err?.message ?? 'Action failed');
+    } catch (err) {
+      toast.error(parseContractError(err), { id: tid });
     } finally {
       setActing(null);
     }

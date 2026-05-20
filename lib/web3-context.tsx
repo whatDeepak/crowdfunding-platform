@@ -98,11 +98,20 @@ export function Web3Provider({ children }: { children: ReactNode }) {
     if (typeof window !== 'undefined' && window.ethereum) {
       window.ethereum.on('accountsChanged', (accounts: string[]) => {
         if (accounts.length > 0) {
-          const addr = accounts[0].toLowerCase();
-          setAccount(addr);
-          // isAdmin is now managed by useAuth()
+          // Re-init everything so contract signer matches the new account
+          initProvider(window.ethereum).then((result) => {
+            if (!result) return;
+            const { addr, web3Provider, escrowContract, bal } = result;
+            setAccount(addr);
+            setProvider(web3Provider);
+            setContract(escrowContract);
+            setBalance(ethers.formatEther(bal));
+          });
         } else {
           setAccount(null);
+          setProvider(null);
+          setContract(null);
+          setBalance(null);
         }
       });
 

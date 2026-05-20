@@ -44,9 +44,9 @@ export default function AdminOrganizationsPage() {
   useEffect(() => {
     if (!isAdmin) return;
     setLoading(true);
-    fetch(`/api/organizations?status=${filter}`)
-      .then((r) => r.ok ? r.json() : [])
-      .then(setOrgs)
+    fetch(`/api/organizations?status=${filter}&per_page=50`)
+      .then((r) => r.ok ? r.json() : { orgs: [] })
+      .then((data) => setOrgs(Array.isArray(data) ? data : (data.orgs ?? [])))
       .catch(() => setOrgs([]))
       .finally(() => setLoading(false));
   }, [isAdmin, filter]);

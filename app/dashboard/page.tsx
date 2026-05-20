@@ -8,10 +8,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
+import { toast } from 'sonner';
+import { parseContractError } from '@/lib/utils';
 import { useWeb3 } from '@/lib/web3-context';
 import {
   Wallet, TrendingUp, Activity, ArrowRight, AlertCircle,
-  Loader, ExternalLink, Plus,
+  Loader, ExternalLink, Plus, RefreshCcw,
 } from 'lucide-react';
 import type { DbCampaign, DbDonation } from '@/lib/types';
 
@@ -32,10 +34,11 @@ function statusBadge(status: string) {
 }
 
 export default function DashboardPage() {
-  const { account, isConnected, connectWallet } = useWeb3();
+  const { account, isConnected, connectWallet, contract } = useWeb3();
   const [campaigns, setCampaigns]   = useState<DbCampaign[]>([]);
   const [donations, setDonations]   = useState<DbDonation[]>([]);
   const [loading, setLoading]       = useState(false);
+  const [refunding, setRefunding]   = useState<string | null>(null);
 
   useEffect(() => {
     if (!account) return;
@@ -63,10 +66,35 @@ export default function DashboardPage() {
     );
   }
 
+  const handleClaimRefund = async (donation: DbDonation) => {
+    if (!contract) { toast.error('Connect MetaMask first'); return; }
+    const contractId = donation.campaigns?.contract_id;
+    if (contractId == null) { toast.error('No on-chain record for this campaign'); return; }
+
+    setRefunding(donation.id);
+    try {
+      const tx = await contract.claimRefund(contractId);
+      toast.info('Refund submitted — waiting for confirmation…');
+      const receipt = await tx.wait();
+      toast.success(`Refund confirmed! Tx: ${receipt.hash.slice(0, 10)}…`);
+      // Mark donation as refunded in local state
+      setDonations((prev) =>
+        prev.map((d) => d.id === donation.id ? { ...d, status: 'refunded' as any } : d)
+      );
+    } catch (err: any) {
+      toast.error(parseContractError(err));
+    } finally {
+      setRefunding(null);
+    }
+  };
+
   const totalDonatedEth = donations
     .filter((d) => d.status === 'confirmed')
     .reduce((s, d) => s + d.amount_eth, 0);
   const activeCampaigns = campaigns.filter((c) => c.status === 'active' || c.status === 'funded');
+  const refundableDonations = donations.filter(
+    (d) => d.campaigns?.status === 'cancelled' && d.status === 'confirmed'
+  );
 
   return (
     <DashboardLayout>
@@ -209,6 +237,49 @@ export default function DashboardPage() {
                         </a>
                       )}
                     </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Refundable Donations */}
+        {!loading && refundableDonations.length > 0 && (
+          <Card className="border-warning">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <RefreshCcw className="w-5 h-5 text-warning" />
+                Refunds Available
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground mb-4">
+                The following campaigns were cancelled. You can reclaim your ETH directly from the escrow contract.
+              </p>
+              <div className="space-y-3">
+                {refundableDonations.map((d) => (
+                  <div key={d.id} className="flex items-center justify-between py-2 border-b last:border-0 gap-4">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {d.campaigns?.title ?? d.campaign_id.slice(0, 8) + '…'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{d.amount_eth.toFixed(4)} ETH donated</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 border-warning text-warning hover:bg-warning/10 flex-shrink-0"
+                      disabled={refunding === d.id}
+                      onClick={() => handleClaimRefund(d)}
+                    >
+                      {refunding === d.id ? (
+                        <Loader className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="w-3.5 h-3.5" />
+                      )}
+                      Claim Refund
+                    </Button>
                   </div>
                 ))}
               </div>

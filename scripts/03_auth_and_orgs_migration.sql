@@ -112,6 +112,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS orgs_user_id_idx ON organizations(user_id) WHE
 -- ────────────────────────────────────────────────────────────
 
 ALTER TABLE verifier_endorsements ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES organizations(id);
+ALTER TABLE verifier_endorsements ADD COLUMN IF NOT EXISTS org_tier       integer DEFAULT 2;
 ALTER TABLE verifier_endorsements ADD COLUMN IF NOT EXISTS is_revoked     boolean DEFAULT false;
 ALTER TABLE verifier_endorsements ADD COLUMN IF NOT EXISTS revoked_by     varchar(42);
 ALTER TABLE verifier_endorsements ADD COLUMN IF NOT EXISTS revoked_at     timestamp;

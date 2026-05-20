@@ -214,6 +214,15 @@ export interface DbDonation {
   block_number?:    number;
   status:           DonationStatus;
   created_at:       string;
+  // Joined when fetched via getDonorHistory
+  campaigns?: {
+    id:           string;
+    title:        string;
+    status:       string;
+    contract_id?: number;
+    image_url?:   string;
+    ai_trust_score?: number;
+  };
 }
 
 export interface DbAiVerification {

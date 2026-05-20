@@ -13,6 +13,7 @@ import type {
   CampaignAnalysisResult,
   ProofAnalysisResult,
   CampaignCategory,
+  MilestoneDbStatus,
   OrgStatus,
   VerificationRequestStatus,
 } from './types';
@@ -230,6 +231,22 @@ export async function createMilestone(
   return data;
 }
 
+export async function updateMilestoneStatus(milestoneId: string, status: MilestoneDbStatus): Promise<void> {
+  const { error } = await supabase
+    .from('milestones')
+    .update({ status })
+    .eq('id', milestoneId);
+  if (error) console.error('updateMilestoneStatus error:', error);
+}
+
+export async function deleteCampaign(campaignId: string): Promise<void> {
+  const { error } = await supabase
+    .from('campaigns')
+    .delete()
+    .eq('id', campaignId);
+  if (error) console.error('deleteCampaign error:', error);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Withdrawal requests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,7 +265,7 @@ export async function getWithdrawalRequests(campaignId: string): Promise<DbWithd
 export async function getAllPendingWithdrawals(): Promise<DbWithdrawalRequest[]> {
   const { data, error } = await supabase
     .from('withdrawal_requests')
-    .select('*, campaigns(title, creator_wallet, category)')
+    .select('*, campaigns(title, creator_wallet, category, contract_id)')
     .eq('status', 'pending')
     .order('created_at', { ascending: true });
 
@@ -359,7 +376,7 @@ export async function getDonations(campaignId: string): Promise<DbDonation[]> {
 export async function getDonorHistory(walletAddress: string): Promise<DbDonation[]> {
   const { data, error } = await supabase
     .from('donations')
-    .select('*, campaigns(id, title, status, image_url, ai_trust_score)')
+    .select('*, campaigns(id, title, status, contract_id, image_url, ai_trust_score)')
     .eq('donor_wallet', walletAddress.toLowerCase())
     .order('created_at', { ascending: false });
 
@@ -376,7 +393,26 @@ export async function recordDonation(
     .select()
     .single();
 
-  if (error) console.error('recordDonation error:', error);
+  if (error) { console.error('recordDonation error:', error); return null; }
+
+  // Increment current_amount_eth on the campaign
+  if (data && donation.status === 'confirmed') {
+    const { data: camp } = await supabase
+      .from('campaigns')
+      .select('current_amount_eth, target_amount_eth, status')
+      .eq('id', donation.campaign_id)
+      .single();
+
+    if (camp) {
+      const newAmount = (camp.current_amount_eth ?? 0) + donation.amount_eth;
+      const newStatus = newAmount >= camp.target_amount_eth && camp.status === 'active' ? 'funded' : camp.status;
+      await supabase
+        .from('campaigns')
+        .update({ current_amount_eth: newAmount, status: newStatus, updated_at: new Date().toISOString() })
+        .eq('id', donation.campaign_id);
+    }
+  }
+
   return data;
 }
 

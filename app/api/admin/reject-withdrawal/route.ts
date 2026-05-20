@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateWithdrawalStatus, logAdminAction } from '@/lib/supabase';
+import { updateWithdrawalStatus, logAdminAction, updateMilestoneStatus, supabase } from '@/lib/supabase';
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,6 +15,16 @@ export async function POST(request: NextRequest) {
     }
 
     await updateWithdrawalStatus(withdrawalId, 'rejected', { rejection_reason: reason });
+
+    // Reset milestone back to pending so creator can retry
+    const { data: wr } = await supabase
+      .from('withdrawal_requests')
+      .select('milestone_id')
+      .eq('id', withdrawalId)
+      .single();
+    if (wr?.milestone_id) {
+      await updateMilestoneStatus(wr.milestone_id, 'pending');
+    }
 
     await logAdminAction({
       admin_wallet: adminWallet,
