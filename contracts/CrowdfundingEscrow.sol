@@ -45,7 +45,7 @@ contract CrowdfundingEscrow {
     // ─────────────────────────────────────────────────────────────────────────
 
     address public admin;
-    uint256 public platformFeePercent = 2;   // 2% taken on each approved release
+    uint256 public platformFeePercent = 0;
     uint256 public platformFeesCollected;
     uint256 public campaignCounter;
 

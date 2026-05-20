@@ -37,8 +37,8 @@
       ]
     },
     "D:\\_D\\Uni\\Major Project\\crowdfunding-platform-ui\\contracts\\CrowdfundingEscrow.sol": {
-      "lastModificationDate": 1779189757160,
-      "contentHash": "c97a2881ab556ed4ec7433958abdab67",
+      "lastModificationDate": 1779308413539,
+      "contentHash": "8adcc020be3bce77f2e51cadceb54303",
       "sourceName": "contracts/CrowdfundingEscrow.sol",
       "solcConfig": {
         "version": "0.8.19",
