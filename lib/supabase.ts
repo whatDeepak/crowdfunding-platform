@@ -251,6 +251,16 @@ export async function deleteCampaign(campaignId: string): Promise<void> {
 // Withdrawal requests
 // ─────────────────────────────────────────────────────────────────────────────
 
+export async function getWithdrawalRequestById(id: string): Promise<DbWithdrawalRequest | null> {
+  const { data, error } = await supabase
+    .from('withdrawal_requests')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (error) console.error('getWithdrawalRequestById error:', error);
+  return data ?? null;
+}
+
 export async function getWithdrawalRequests(campaignId: string): Promise<DbWithdrawalRequest[]> {
   const { data, error } = await supabase
     .from('withdrawal_requests')

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getWithdrawalRequests,
+  getWithdrawalRequestById,
   saveWithdrawalAiResult,
   logAiVerification,
 } from '@/lib/supabase';
@@ -21,6 +22,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'AI service not configured' }, { status: 503 });
     }
 
+    // Fetch the withdrawal request to get the proof IPFS CID
+    const withdrawal = await getWithdrawalRequestById(withdrawalRequestId);
+
     const aiResponse = await fetch(`${AI_SERVICE_URL}/analyze-proof`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -28,6 +32,7 @@ export async function POST(request: NextRequest) {
         milestone_title:      analysisInput.milestoneTitle,
         milestone_amount_eth: analysisInput.milestoneAmount,
         proof_description:    analysisInput.proofDescription,
+        proof_ipfs_cid:       withdrawal?.proof_ipfs_hash ?? null,
         document_names:       analysisInput.documentNames ?? [],
         campaign_title:       analysisInput.campaignTitle,
         campaign_category:    analysisInput.campaignCategory,

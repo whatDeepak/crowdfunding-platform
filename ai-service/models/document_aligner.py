@@ -38,7 +38,7 @@ _DOC_KEY_MAP: dict[str, list[str]] = {
     "registration_number":   ["registration_number"],
 }
 
-_UNUSABLE = {"download_failed", "unsupported_format", "extraction_failed", "unreadable"}
+_UNUSABLE = {"download_failed", "unsupported_format", "extraction_failed", "unreadable", "pdf_unrendered"}
 
 
 def _normalize(s) -> str:

@@ -260,7 +260,7 @@ export default function CreateCampaignPage() {
       const res = await fetch(`/api/campaigns/${aiResult.campaignDbId}/resubmit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newDocumentCids: newCids }),
+        body: JSON.stringify({ documentIpfsCids: newCids }),
       });
       const data = await res.json();
       toast.dismiss();

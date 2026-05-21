@@ -75,6 +75,7 @@ class ProofAnalysisRequest(BaseModel):
     milestone_title:       str
     milestone_amount_eth:  float = Field(gt=0)
     proof_description:     str
+    proof_ipfs_cid:        Optional[str] = None     # IPFS CID of the actual proof document
     document_names:        List[str] = []
     campaign_title:        str
     campaign_category:     str = Field(pattern="^(medical|education|disaster|community)$")
@@ -201,9 +202,72 @@ def analyze_campaign(req: CampaignAnalysisRequest):
     )
 
 
+def _score_proof_document(proof_doc: dict, milestone_amount_eth: float) -> tuple[int, list[str]]:
+    """Adjust consistency score based on OCR'd proof document. Returns (delta, flags)."""
+    delta: int = 0
+    flags: list[str] = []
+
+    doc_type = proof_doc.get("doc_type", "other")
+
+    if doc_type == "download_failed":
+        flags.append("proof_document_fetch_failed")
+        return -5, flags
+
+    if doc_type == "pdf_unrendered":
+        # PDF was uploaded but poppler couldn't render it — give partial credit
+        return 5, flags
+
+    if doc_type == "unreadable":
+        flags.append("proof_document_unreadable")
+        return -10, flags
+
+    GOOD_PROOF_TYPES = {"invoice", "receipt", "medical_record", "prescription", "discharge_summary", "certificate"}
+    if doc_type in GOOD_PROOF_TYPES:
+        delta += 15
+    elif doc_type == "id_proof":
+        delta -= 5
+        flags.append("wrong_document_type_for_proof")
+    else:
+        delta += 5
+
+    doc_amount = proof_doc.get("amount")
+    if doc_amount is not None:
+        try:
+            cleaned = str(doc_amount).replace(",", "").strip()
+            for sym in ["₹", "$", "€", "£", "¥", "Rs", "INR", "USD"]:
+                cleaned = cleaned.replace(sym, "")
+            amt = float(cleaned.strip())
+            if amt > 0:
+                delta += 10
+            else:
+                flags.append("document_shows_zero_amount")
+                delta -= 5
+        except (ValueError, TypeError):
+            pass
+
+    doc_date_str = proof_doc.get("date")
+    if doc_date_str:
+        try:
+            import dateparser
+            from datetime import datetime, timedelta
+            doc_date = dateparser.parse(str(doc_date_str))
+            if doc_date:
+                now = datetime.now()
+                if doc_date > now + timedelta(days=1):
+                    flags.append("proof_document_future_dated")
+                    delta -= 20
+                elif (now - doc_date).days > 365:
+                    flags.append("proof_document_too_old")
+                    delta -= 10
+        except Exception:
+            pass
+
+    return delta, flags
+
+
 @app.post("/analyze-proof", response_model=ProofAnalysisResponse)
 def analyze_proof(req: ProofAnalysisRequest):
-    """Heuristic + LLM consistency check for withdrawal proof submissions."""
+    """Heuristic + document OCR + LLM consistency check for withdrawal proof submissions."""
     flags: list[str] = []
     proof_lower = req.proof_description.lower()
 
@@ -219,6 +283,15 @@ def analyze_proof(req: ProofAnalysisRequest):
             flags.append(f"suspicious_proof_keyword:{word}")
 
     base_score = max(100 - len(flags) * 20, 10)
+
+    # Read and cross-validate the actual proof document if a CID was provided
+    if req.proof_ipfs_cid:
+        proof_doc = extract_document_entities(req.proof_ipfs_cid)
+        doc_delta, doc_flags = _score_proof_document(proof_doc, req.milestone_amount_eth)
+        base_score = max(10, min(100, base_score + doc_delta))
+        flags.extend(doc_flags)
+    else:
+        flags.append("proof_document_cid_not_provided")
 
     admin_note = generate_proof_explanation(
         milestone_title=req.milestone_title,
@@ -243,6 +316,15 @@ def analyze_proof(req: ProofAnalysisRequest):
         flags=flags,
         admin_note=admin_note,
     )
+
+
+@app.on_event("startup")
+def startup_validation():
+    missing = [key for key in ("GROQ_API_KEY",) if not os.getenv(key)]
+    if missing:
+        print(f"WARNING: Missing env vars: {', '.join(missing)} — Vision and LLM calls will fail")
+    else:
+        print("✓ GROQ_API_KEY present — AI pipeline ready")
 
 
 if __name__ == "__main__":

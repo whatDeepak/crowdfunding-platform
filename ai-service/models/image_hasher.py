@@ -20,6 +20,8 @@ import httpx
 import imagehash
 from PIL import Image
 
+from .http_utils import fetch_with_retry
+
 SIMILARITY_THRESHOLD = 10  # pHash Hamming distance for "reused" image
 
 
@@ -49,9 +51,10 @@ _NEUTRAL = ImageAnalysisResult(
 # ── pHash helpers ─────────────────────────────────────────────────────────────
 
 def _fetch_image_bytes(url: str) -> bytes:
-    r = httpx.get(url, timeout=15, follow_redirects=True)
-    r.raise_for_status()
-    return r.content
+    resp = fetch_with_retry(url, timeout=15)
+    if resp is None:
+        raise RuntimeError(f"Failed to fetch image after retries: {url}")
+    return resp.content
 
 
 def compute_phash(image_url: str) -> Optional[str]:
@@ -146,13 +149,15 @@ def analyze_image(
     flags: List[str] = []
 
     # Step 1 — download image once, share bytes for pHash + Vision
+    response = fetch_with_retry(image_url, timeout=15)
+    if response is None:
+        print(f"[image_hasher] Image fetch failed after retries: {image_url}")
+        return _NEUTRAL
     try:
-        response = httpx.get(image_url, timeout=15, follow_redirects=True)
-        response.raise_for_status()
         img_bytes = response.content
         content_type = response.headers.get("content-type", "image/jpeg").split(";")[0]
     except Exception as exc:
-        print(f"[image_hasher] Image fetch failed: {exc}")
+        print(f"[image_hasher] Image read failed: {exc}")
         return _NEUTRAL
 
     # Step 2 — pHash duplicate check
